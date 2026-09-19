@@ -1,0 +1,140 @@
+@import "tailwindcss";
+
+/* ==========================================================================
+   PRINT STYLES FOR SIPENA KURMER (@media print)
+   Khusus Cetak Lembar Asesmen & Rekap Nilai (A4 / F4 Landscape)
+   ========================================================================== */
+@media print {
+  @page {
+    size: landscape;
+    margin: 6mm 5mm 6mm 5mm;
+  }
+
+  /* Reset dokumen untuk cetak */
+  html,
+  body {
+    background-color: #ffffff !important;
+    color: #000000 !important;
+    font-size: 8pt !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 100% !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Sembunyikan elemen antarmuka yang tidak perlu dicetak */
+  .no-print,
+  header,
+  nav,
+  footer,
+  aside,
+  button,
+  input,
+  select,
+  [role="navigation"],
+  #btn-print-navbar,
+  #btn-print-subject-report {
+    display: none !important;
+  }
+
+  .print-only {
+    display: block !important;
+  }
+
+  /* Pastikan kontainer utama melebar 100% tanpa batasan max-width atau padding */
+  .min-h-screen {
+    min-height: auto !important;
+    background: #ffffff !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  main {
+    max-width: 100% !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  /* Area Lembar Cetak (Daftar Nilai Asesmen) tampil penuh 100% mengisi lebar kertas A4/F4 */
+  .print-sheet {
+    box-shadow: none !important;
+    border: none !important;
+    border-radius: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    overflow: visible !important;
+    background: transparent !important;
+  }
+
+  .overflow-x-auto,
+  .overflow-auto,
+  .overflow-hidden {
+    overflow: visible !important;
+  }
+
+  /* Tabel Asesmen Rapi & Proporsional */
+  table {
+    width: 100% !important;
+    max-width: 100% !important;
+    border-collapse: collapse !important;
+    page-break-inside: auto !important;
+    table-layout: auto !important;
+  }
+
+  tr {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    page-break-after: auto !important;
+  }
+
+  thead {
+    display: table-header-group !important;
+  }
+
+  tfoot {
+    display: table-footer-group !important;
+  }
+
+  th,
+  td {
+    border: 1px solid #000000 !important;
+    padding: 2px 3px !important;
+    font-size: 7.5pt !important;
+    line-height: 1.15 !important;
+    color: #000000 !important;
+  }
+
+  th {
+    background-color: #f1f5f9 !important;
+    font-weight: 700 !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Blok Tanda Tangan tidak boleh terpotong di tengah halaman */
+  .break-inside-avoid {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+}
+
+/* Custom scrollbar for dense data tables */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 3px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+

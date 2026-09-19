@@ -1,0 +1,6 @@
+{
+  "name": "SiPENA Kurmer",
+  "description": "Sistem Penilaian & Analisis KKTP Kurikulum Merdeka untuk Guru Sekolah Dasar",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
