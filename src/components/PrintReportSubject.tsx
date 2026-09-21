@@ -1,8 +1,8 @@
-import React from "react";
+import React, { useEffect } from "react";
 import { useApp } from "../context/AppContext";
 import { calculateStudentGrades } from "../utils/gradeCalculations";
 import { SignatureBlock } from "./SignatureBlock";
-import { Printer, ArrowLeft } from "lucide-react";
+import { Printer, ArrowLeft, Database } from "lucide-react";
 
 export const PrintReportSubject: React.FC = () => {
   const {
@@ -14,8 +14,14 @@ export const PrintReportSubject: React.FC = () => {
     selectedSemester,
     setSelectedSemester,
     getGradeRecord,
+    refreshGradeRecords,
     setActiveTab
   } = useApp();
+
+  // Auto-fetch real-time grade records from Supabase on mount, semester change, or subject change
+  useEffect(() => {
+    refreshGradeRecords();
+  }, [selectedSemester, selectedSubjectId, refreshGradeRecords]);
 
   const currentSubject = subjects.find((s) => s.id === selectedSubjectId) || subjects[0];
 
@@ -97,14 +103,16 @@ export const PrintReportSubject: React.FC = () => {
           </div>
         </div>
 
-        <button
-          id="btn-print-subject-report"
-          type="button"
-          onClick={() => window.print()}
-          className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white rounded-lg text-xs sm:text-sm font-bold shadow-xs transition-colors cursor-pointer"
-        >
-          <Printer className="w-4 h-4" /> Cetak Lembar Mapel (A4/F4)
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            id="btn-print-subject-report"
+            type="button"
+            onClick={() => window.print()}
+            className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white rounded-lg text-xs sm:text-sm font-bold shadow-xs transition-colors cursor-pointer"
+          >
+            <Printer className="w-4 h-4" /> Cetak Lembar Mapel (A4/F4)
+          </button>
+        </div>
       </div>
 
       {/* PRINT-READY PAPER CANVAS */}

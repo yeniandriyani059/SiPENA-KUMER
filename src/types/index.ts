@@ -97,3 +97,18 @@ export interface SipenaUserProfile {
   updated_at?: string;
 }
 
+export interface SipenaNilaiRow {
+  id?: string;
+  user_id: string;
+  siswa_id: string;
+  mapel_id: string;
+  bab_id: string;
+  nilai: number;
+  tp_id?: string | null;
+  semester?: string;
+  jenis_penilaian?: string;
+  catatan?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+

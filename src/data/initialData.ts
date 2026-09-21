@@ -1,5 +1,24 @@
 import { SchoolSettings, Student, Subject, StudentGradeRecord } from "../types";
 
+export const emptySchoolSettings: SchoolSettings = {
+  namaSekolah: "",
+  npsn: "",
+  alamat: "",
+  kecamatan: "",
+  kabupaten: "",
+  provinsi: "",
+  kelas: "",
+  fase: "",
+  semester: "1",
+  tahunPelajaran: "",
+  namaGuru: "",
+  nipGuru: "",
+  namaKepsek: "",
+  nipKepsek: "",
+  titimangsa: "",
+  tanggalCetak: ""
+};
+
 export const initialSchoolSettings: SchoolSettings = {
   namaSekolah: "SDN KARANGGINTUNG 06",
   npsn: "20302145",
@@ -412,78 +431,7 @@ export const initialSubjects: Subject[] = [
   }
 ];
 
-// Helper to seed realistic grades for demo
+// Return empty grade records so no dummy data is loaded
 export function generateInitialGradeRecords(): StudentGradeRecord[] {
-  const records: StudentGradeRecord[] = [];
-
-  // Pre-configured baseline scores for each student to make data realistic and varied
-  const studentProfiles: Record<string, { base: number; p5: string }> = {
-    "std-1": { base: 84, p5: "Sangat aktif dalam diskusi gotong royong dan bernalar kritis." },
-    "std-2": { base: 92, p5: "Menunjukkan kemandirian tinggi, kreatif, dan budi pekerti luhur." },
-    "std-3": { base: 78, p5: "Cukup tekun, perlu bimbingan dalam penguatan bernalar kritis." },
-    "std-4": { base: 88, p5: "Sangat baik dalam kebhinekaan global dan kerjasama tim." },
-    "std-5": { base: 66, p5: "Perlu motivasi belajar mandiri dan pendampingan fokus tugas." },
-    "std-6": { base: 95, p5: "Prestasi sangat memuaskan, akhlak mulia dan kepemimpinan menonjol." },
-    "std-7": { base: 72, p5: "Disiplin hadir, perlu peningkatan pemahaman konsep analitis." },
-    "std-8": { base: 82, p5: "Kreatif dalam karya proyek, selalu bersikap ramah dan santun." },
-    "std-9": { base: 68, p5: "Membutuhkan pengulangan materi hitung dan remedial berkala." },
-    "std-10": { base: 86, p5: "Rapi dalam pengerjaan buku tugas dan aktif bertanya di kelas." },
-    "std-11": { base: 74, p5: "Cukup baik, motivasi terus meningkat dalam unjuk kerja." },
-    "std-12": { base: 90, p5: "Pemahaman materi cepat, sering membantu teman yang kesulitan." },
-    "std-13": { base: 80, p5: "Menunjukkan rasa ingin tahu yang besar saat eksperimen praktik." },
-    "std-14": { base: 85, p5: "Konsisten dan tekun, akhlak terpuji terhadap guru dan teman." },
-    "std-15": { base: 70, p5: "Perlu bimbingan intensif dalam literasi dan pemahaman teks." }
-  };
-
-  initialStudents.forEach((student, sIdx) => {
-    initialSubjects.forEach((subject, subIdx) => {
-      const profile = studentProfiles[student.id] || { base: 75, p5: "Berkembang sesuai harapan." };
-      // add minor deterministic variation based on student & subject index
-      const variation = ((sIdx * 3 + subIdx * 5) % 11) - 5;
-      const targetScore = Math.min(98, Math.max(55, profile.base + variation));
-
-      // Build Formatif TP scores
-      const tpScores: Record<string, number | null> = {};
-      subject.babs.forEach((bab) => {
-        bab.tps.forEach((tp, tpIdx) => {
-          const tpScore = Math.min(100, Math.max(40, targetScore + ((tpIdx % 3) - 1) * 3));
-          tpScores[tp.id] = tpScore;
-        });
-      });
-
-      // Sumatif scores per BAB
-      const babScores: Record<string, number | null> = {};
-      subject.babs.forEach((bab, bIdx) => {
-        const bScore = Math.min(100, Math.max(45, targetScore + ((bIdx % 2) === 0 ? 2 : -2)));
-        babScores[bab.id] = bScore;
-      });
-
-      const astsNonTes = Math.min(100, Math.max(50, targetScore + 1));
-      const astsTes = Math.min(100, Math.max(45, targetScore - 1));
-      const asasNonTes = Math.min(100, Math.max(50, targetScore + 2));
-      const asasTes = Math.min(100, Math.max(45, targetScore));
-
-      records.push({
-        studentId: student.id,
-        subjectId: subject.id,
-        semester: "1",
-        formatif: {
-          tpScores,
-          ulanganHarian: targetScore,
-          tugasRutin: Math.min(100, targetScore + 3),
-          praktikProyek: Math.min(100, targetScore + 2),
-          catatanP5: profile.p5
-        },
-        sumatif: {
-          babScores,
-          astsNonTes,
-          astsTes,
-          asasNonTes,
-          asasTes
-        }
-      });
-    });
-  });
-
-  return records;
+  return [];
 }

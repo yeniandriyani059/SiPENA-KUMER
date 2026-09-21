@@ -105,7 +105,11 @@ export const Navbar: React.FC = () => {
                 </span>
               </div>
               <p className="text-xs text-slate-500 font-medium">
-                {schoolSettings.namaSekolah} • Kelas {schoolSettings.kelas} ({schoolSettings.fase})
+                {schoolSettings.namaSekolah ? schoolSettings.namaSekolah : "SiPENA Kurikulum Merdeka"}
+                {schoolSettings.kelas
+                  ? ` • ${schoolSettings.kelas.toLowerCase().startsWith("kelas") ? schoolSettings.kelas : `Kelas ${schoolSettings.kelas}`}`
+                  : ""}
+                {schoolSettings.fase ? ` (${schoolSettings.fase})` : ""}
               </p>
             </div>
           </div>

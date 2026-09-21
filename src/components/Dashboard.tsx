@@ -98,9 +98,14 @@ export const Dashboard: React.FC = () => {
 
           <div className="bg-white/10 backdrop-blur-md rounded-xl p-4 border border-white/15 min-w-[240px]">
             <p className="text-xs text-indigo-200 font-medium uppercase tracking-wider">Identitas Kelas</p>
-            <p className="text-lg font-bold text-white mt-1">Kelas {schoolSettings.kelas} ({schoolSettings.fase})</p>
-            <p className="text-xs text-slate-300 mt-0.5">Wali Kelas: {schoolSettings.namaGuru}</p>
-            <p className="text-xs text-slate-400">NIP. {schoolSettings.nipGuru}</p>
+            <p className="text-lg font-bold text-white mt-1">
+              {schoolSettings.kelas
+                ? (schoolSettings.kelas.toLowerCase().startsWith("kelas") ? schoolSettings.kelas : `Kelas ${schoolSettings.kelas}`)
+                : "Kelas Belum Diatur"}
+              {schoolSettings.fase ? ` (${schoolSettings.fase})` : ""}
+            </p>
+            <p className="text-xs text-slate-300 mt-0.5">Wali Kelas: {schoolSettings.namaGuru || "-"}</p>
+            <p className="text-xs text-slate-400">NIP. {schoolSettings.nipGuru || "-"}</p>
           </div>
         </div>
       </div>

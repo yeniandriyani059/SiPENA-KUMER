@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useApp } from "../context/AppContext";
 import { evaluateKktpInterval, safeAverage } from "../utils/gradeCalculations";
 import { SignatureBlock } from "./SignatureBlock";
@@ -14,7 +14,8 @@ import {
   Edit3,
   CheckCircle2,
   Sparkles,
-  RotateCcw
+  RotateCcw,
+  Database
 } from "lucide-react";
 
 const KOKURIKULER_PRESETS = [
@@ -48,8 +49,14 @@ export const StudentKktpAnalysis: React.FC = () => {
     selectedStudentId,
     setSelectedStudentId,
     getGradeRecord,
-    updateStudentGradeField
+    updateStudentGradeField,
+    refreshGradeRecords
   } = useApp();
+
+  // Auto-fetch real-time grade records from Supabase on mount, semester, student, or subject change
+  useEffect(() => {
+    refreshGradeRecords();
+  }, [selectedSemester, selectedStudentId, selectedSubjectId, refreshGradeRecords]);
 
   const [isEditingNote, setIsEditingNote] = useState(false);
 
@@ -191,14 +198,16 @@ export const StudentKktpAnalysis: React.FC = () => {
           </select>
         </div>
 
-        {/* Print Button */}
-        <button
-          type="button"
-          onClick={() => window.print()}
-          className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white rounded-lg text-xs sm:text-sm font-bold shadow-xs transition-colors cursor-pointer"
-        >
-          <Printer className="w-4 h-4" /> Cetak Analisis KKTP Siswa
-        </button>
+        {/* Action Buttons */}
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => window.print()}
+            className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white rounded-lg text-xs sm:text-sm font-bold shadow-xs transition-colors cursor-pointer"
+          >
+            <Printer className="w-4 h-4" /> Cetak Analisis KKTP Siswa
+          </button>
+        </div>
       </div>
 
       {/* PRINT-READY ANALISIS KKTP SHEET (A4 Landscape or Portrait) */}

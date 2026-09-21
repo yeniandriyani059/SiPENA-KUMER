@@ -12,6 +12,7 @@ import {
   SipenaUserProfile
 } from "../types";
 import {
+  emptySchoolSettings,
   initialSchoolSettings,
   initialStudents,
   initialSubjects,
@@ -25,6 +26,17 @@ import {
   Session
 } from "../lib/supabase";
 import { supabaseService } from "../services/supabaseService";
+
+function generateUUID(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function (c) {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
 
 interface AppContextType {
   // Supabase Auth & Multi-tenant User
@@ -45,7 +57,7 @@ interface AppContextType {
 
   // School Settings
   schoolSettings: SchoolSettings;
-  updateSchoolSettings: (settings: Partial<SchoolSettings>) => void;
+  updateSchoolSettings: (settings: Partial<SchoolSettings>) => Promise<boolean>;
 
   // Students
   students: Student[];
@@ -79,6 +91,8 @@ interface AppContextType {
     value: any,
     subKey?: string
   ) => void;
+  isRefreshingGrades: boolean;
+  refreshGradeRecords: () => Promise<void>;
 
   // Navigation & View Filters
   activeTab: ActiveTab;
@@ -115,17 +129,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [authLoading, setAuthLoading] = useState<boolean>(true);
   const [syncStatus, setSyncStatus] = useState<"synced" | "syncing" | "offline" | "error">("synced");
 
-  // Core app state
-  const [schoolSettings, setSchoolSettings] = useState<SchoolSettings>(initialSchoolSettings);
-  const [students, setStudents] = useState<Student[]>(initialStudents);
-  const [subjects, setSubjects] = useState<Subject[]>(initialSubjects);
-  const [gradeRecords, setGradeRecords] = useState<StudentGradeRecord[]>(generateInitialGradeRecords());
+  // Core app state - Real Multi-Tenant data from Supabase (Clean Empty State)
+  const [schoolSettings, setSchoolSettings] = useState<SchoolSettings>(emptySchoolSettings);
+  const [students, setStudents] = useState<Student[]>([]);
+  const [subjects, setSubjects] = useState<Subject[]>([]);
+  const [gradeRecords, setGradeRecords] = useState<StudentGradeRecord[]>([]);
+  const [isRefreshingGrades, setIsRefreshingGrades] = useState<boolean>(false);
 
   // UI state
   const [activeTab, setActiveTab] = useState<ActiveTab>("dashboard");
-  const [selectedSubjectId, setSelectedSubjectId] = useState<string>("sub-bi");
+  const [selectedSubjectId, setSelectedSubjectId] = useState<string>("");
   const [selectedSemester, setSelectedSemester] = useState<"1" | "2">("1");
-  const [selectedStudentId, setSelectedStudentId] = useState<string>("std-1");
+  const [selectedStudentId, setSelectedStudentId] = useState<string>("");
   const [rekapMode, setRekapMode] = useState<RekapMode>("rekap-akhir");
   const [rekapTesVariant, setRekapTesVariant] = useState<RekapTesVariant>("asli");
 
@@ -136,17 +151,82 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const userId = activeUser.id;
     setSyncStatus("syncing");
 
-    // 1. First check local user-scoped cache for instant render
+    // 1. First check local user-scoped cache for instant render, purging any stale dummy data
     const cachedSchool = localStorage.getItem(`${STORAGE_KEY}_${userId}_school`);
     const cachedStudents = localStorage.getItem(`${STORAGE_KEY}_${userId}_students`);
     const cachedSubjects = localStorage.getItem(`${STORAGE_KEY}_${userId}_subjects`);
     const cachedGrades = localStorage.getItem(`${STORAGE_KEY}_${userId}_grades`);
     const cachedProfile = localStorage.getItem(`${STORAGE_KEY}_${userId}_profile`);
 
-    if (cachedSchool) setSchoolSettings(JSON.parse(cachedSchool));
-    if (cachedStudents) setStudents(JSON.parse(cachedStudents));
-    if (cachedSubjects) setSubjects(JSON.parse(cachedSubjects));
-    if (cachedGrades) setGradeRecords(JSON.parse(cachedGrades));
+    if (cachedSchool) {
+      try {
+        const parsed = JSON.parse(cachedSchool);
+        if (parsed?.alamat?.includes("Sumbang") || parsed?.namaGuru?.includes("Siti Rahmawati")) {
+          localStorage.removeItem(`${STORAGE_KEY}_${userId}_school`);
+          setSchoolSettings({
+            ...emptySchoolSettings,
+            namaGuru: activeUser.user_metadata?.full_name || activeUser.email?.split("@")[0] || ""
+          });
+        } else {
+          setSchoolSettings(parsed);
+        }
+      } catch (e) {
+        setSchoolSettings(emptySchoolSettings);
+      }
+    } else {
+      setSchoolSettings({
+        ...emptySchoolSettings,
+        namaGuru: activeUser.user_metadata?.full_name || activeUser.email?.split("@")[0] || ""
+      });
+    }
+
+    if (cachedStudents) {
+      try {
+        const parsed = JSON.parse(cachedStudents);
+        if (Array.isArray(parsed) && parsed.some((s: any) => s.id === "std-1" || s.nama === "Ahmad Rizky Pratama")) {
+          localStorage.removeItem(`${STORAGE_KEY}_${userId}_students`);
+          setStudents([]);
+        } else {
+          setStudents(Array.isArray(parsed) ? parsed : []);
+        }
+      } catch (e) {
+        setStudents([]);
+      }
+    } else {
+      setStudents([]);
+    }
+
+    if (cachedSubjects) {
+      try {
+        const parsed = JSON.parse(cachedSubjects);
+        if (Array.isArray(parsed) && parsed.some((s: any) => s.id === "sub-pabp" || s.kode === "PABP")) {
+          localStorage.removeItem(`${STORAGE_KEY}_${userId}_subjects`);
+          setSubjects([]);
+        } else {
+          setSubjects(Array.isArray(parsed) ? parsed : []);
+        }
+      } catch (e) {
+        setSubjects([]);
+      }
+    } else {
+      setSubjects([]);
+    }
+
+    if (cachedGrades) {
+      try {
+        const parsed = JSON.parse(cachedGrades);
+        if (Array.isArray(parsed) && parsed.some((g: any) => g.studentId === "std-1")) {
+          localStorage.removeItem(`${STORAGE_KEY}_${userId}_grades`);
+          setGradeRecords([]);
+        } else {
+          setGradeRecords(Array.isArray(parsed) ? parsed : []);
+        }
+      } catch (e) {
+        setGradeRecords([]);
+      }
+    } else {
+      setGradeRecords([]);
+    }
 
     // Check cached activation status
     let activeState = false;
@@ -162,10 +242,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setIsAccountActive(activeState);
     }
 
-    // 2. Fetch from Supabase Cloud if configured
+    // 2. Fetch from Supabase Cloud (Multi-Tenant Real Data)
     if (isSupabaseConfigured) {
       try {
-        // Fetch or initialize sipena_users profile
         const [cloudProfileRaw, cloudConfig, cloudStudents, cloudSubjects, cloudGrades] = await Promise.all([
           supabaseService.getUserProfile(userId),
           supabaseService.fetchSchoolSettings(userId),
@@ -198,7 +277,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           setIsAccountActive(!!cloudProfile.is_active);
           localStorage.setItem(`${STORAGE_KEY}_${userId}_profile`, JSON.stringify(cloudProfile));
         } else {
-          // Fallback: If no profile row yet, check user_metadata or default to false
           const isMetadataActive = !!activeUser.user_metadata?.is_active;
           const newProfile = {
             user_id: userId,
@@ -209,46 +287,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           setUserProfile(newProfile);
           setIsAccountActive(isMetadataActive);
           localStorage.setItem(`${STORAGE_KEY}_${userId}_profile`, JSON.stringify(newProfile));
-          // Async attempt to persist to sipena_users
           supabaseService.upsertUserProfile(newProfile);
         }
 
         if (cloudConfig) {
           setSchoolSettings(cloudConfig);
           localStorage.setItem(`${STORAGE_KEY}_${userId}_school`, JSON.stringify(cloudConfig));
-        } else if (!cachedSchool) {
-          // Initialize fresh config for new user
-          const initial = {
-            ...initialSchoolSettings,
-            namaGuru: activeUser.user_metadata?.full_name || activeUser.email?.split("@")[0] || "Guru Kelas"
-          };
-          setSchoolSettings(initial);
-          await supabaseService.saveSchoolSettings(userId, initial);
         }
 
-        if (cloudStudents && cloudStudents.length > 0) {
+        // Real data multi-tenant: accept cloud data directly (even when empty array)
+        if (cloudStudents !== null) {
           setStudents(cloudStudents);
           localStorage.setItem(`${STORAGE_KEY}_${userId}_students`, JSON.stringify(cloudStudents));
-        } else if (!cachedStudents) {
-          setStudents(initialStudents);
-          await supabaseService.saveStudents(userId, initialStudents);
         }
 
-        if (cloudSubjects && cloudSubjects.length > 0) {
+        if (cloudSubjects !== null) {
           setSubjects(cloudSubjects);
           localStorage.setItem(`${STORAGE_KEY}_${userId}_subjects`, JSON.stringify(cloudSubjects));
-        } else if (!cachedSubjects) {
-          setSubjects(initialSubjects);
-          await supabaseService.saveSubjects(userId, initialSubjects);
         }
 
-        if (cloudGrades && cloudGrades.length > 0) {
+        if (cloudGrades !== null) {
           setGradeRecords(cloudGrades);
           localStorage.setItem(`${STORAGE_KEY}_${userId}_grades`, JSON.stringify(cloudGrades));
-        } else if (!cachedGrades) {
-          const initialGrades = generateInitialGradeRecords();
-          setGradeRecords(initialGrades);
-          await supabaseService.saveGradeRecords(userId, initialGrades);
         }
 
         setSyncStatus("synced");
@@ -257,11 +317,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setSyncStatus("offline");
       }
     } else {
-      // Local demo / preview mode without cloud
-      if (!cachedSchool) setSchoolSettings(initialSchoolSettings);
-      if (!cachedStudents) setStudents(initialStudents);
-      if (!cachedSubjects) setSubjects(initialSubjects);
-      if (!cachedGrades) setGradeRecords(generateInitialGradeRecords());
       setSyncStatus("offline");
     }
 
@@ -592,6 +647,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setIsAccountActive(false);
     setActiveTab("dashboard");
     isDataInitializedRef.current = false;
+    setStudents([]);
+    setSubjects([]);
+    setGradeRecords([]);
+    setSchoolSettings(emptySchoolSettings);
   };
 
   const syncWithSupabase = async () => {
@@ -611,140 +670,333 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // School actions
-  const updateSchoolSettings = (newSettings: Partial<SchoolSettings>) => {
-    setSchoolSettings((prev) => ({ ...prev, ...newSettings }));
+  const updateSchoolSettings = async (newSettings: Partial<SchoolSettings>): Promise<boolean> => {
+    let updated: SchoolSettings = { ...schoolSettings, ...newSettings };
+    setSchoolSettings((prev) => {
+      updated = { ...prev, ...newSettings };
+      return updated;
+    });
+
+    if (user) {
+      try {
+        localStorage.setItem(`${STORAGE_KEY}_${user.id}_school`, JSON.stringify(updated));
+      } catch (e) {
+        console.error("Local storage error:", e);
+      }
+
+      if (isSupabaseConfigured) {
+        setSyncStatus("syncing");
+        const ok = await supabaseService.saveSchoolSettings(user.id, updated);
+        setSyncStatus("synced");
+        return ok;
+      }
+    }
+    return true;
   };
 
-  // Student actions
-  const addStudent = (studentData: Omit<Student, "id">) => {
+  // Student actions (Multi-tenant with user_id)
+  const addStudent = async (studentData: Omit<Student, "id">) => {
+    const studentId = generateUUID();
     const newStudent: Student = {
       ...studentData,
-      id: `std-${Date.now()}`
+      id: studentId
     };
-    setStudents((prev) => [...prev, newStudent]);
-  };
+    const nextStudents = [...students, newStudent];
+    setStudents(nextStudents);
 
-  const updateStudent = (id: string, data: Partial<Student>) => {
-    setStudents((prev) => prev.map((s) => (s.id === id ? { ...s, ...data } : s)));
-  };
+    if (user) {
+      try {
+        localStorage.setItem(`${STORAGE_KEY}_${user.id}_students`, JSON.stringify(nextStudents));
+      } catch (e) {
+        console.error("Local storage error:", e);
+      }
 
-  const deleteStudent = (id: string) => {
-    if (!user) return;
-    setStudents((prev) => prev.filter((s) => s.id !== id));
-    setGradeRecords((prev) => prev.filter((r) => r.studentId !== id));
-    if (isSupabaseConfigured) {
-      supabaseService.deleteStudent(user.id, id);
+      if (isSupabaseConfigured) {
+        setSyncStatus("syncing");
+        const res = await supabaseService.insertStudent(user.id, newStudent);
+        if (res.success && res.data) {
+          setStudents((prev) => prev.map((s) => (s.id === studentId ? res.data! : s)));
+          setSyncStatus("synced");
+        } else {
+          setSyncStatus("synced");
+        }
+      }
     }
   };
 
-  // Subject actions
-  const addSubject = (subjectData: Omit<Subject, "id">) => {
+  const updateStudent = async (id: string, data: Partial<Student>) => {
+    const nextStudents = students.map((s) => (s.id === id ? { ...s, ...data } : s));
+    setStudents(nextStudents);
+
+    if (user) {
+      try {
+        localStorage.setItem(`${STORAGE_KEY}_${user.id}_students`, JSON.stringify(nextStudents));
+      } catch (e) {
+        console.error("Local storage error:", e);
+      }
+
+      if (isSupabaseConfigured) {
+        setSyncStatus("syncing");
+        await supabaseService.updateStudent(user.id, id, data);
+        setSyncStatus("synced");
+      }
+    }
+  };
+
+  const deleteStudent = async (id: string) => {
+    if (!user) return;
+    const nextStudents = students.filter((s) => s.id !== id);
+    setStudents(nextStudents);
+    setGradeRecords((prev) => prev.filter((r) => r.studentId !== id));
+
+    try {
+      localStorage.setItem(`${STORAGE_KEY}_${user.id}_students`, JSON.stringify(nextStudents));
+    } catch (e) {
+      console.error("Local storage error:", e);
+    }
+
+    if (isSupabaseConfigured) {
+      setSyncStatus("syncing");
+      await supabaseService.deleteStudent(user.id, id);
+      setSyncStatus("synced");
+    }
+  };
+
+  // Subject actions (Multi-tenant with user_id)
+  const addSubject = async (subjectData: Omit<Subject, "id">) => {
+    const subjectId = generateUUID();
     const newSubject: Subject = {
       ...subjectData,
-      id: `sub-${Date.now()}`
+      id: subjectId
     };
-    setSubjects((prev) => [...prev, newSubject]);
+    const nextSubjects = [...subjects, newSubject];
+    setSubjects(nextSubjects);
+
+    if (user) {
+      try {
+        localStorage.setItem(`${STORAGE_KEY}_${user.id}_subjects`, JSON.stringify(nextSubjects));
+      } catch (e) {
+        console.error("Local storage error:", e);
+      }
+
+      if (isSupabaseConfigured) {
+        setSyncStatus("syncing");
+        const res = await supabaseService.insertSubject(user.id, newSubject);
+        if (res.success && res.data) {
+          setSubjects((prev) => prev.map((s) => (s.id === subjectId ? res.data! : s)));
+        }
+        setSyncStatus("synced");
+      }
+    }
   };
 
-  const updateSubject = (id: string, data: Partial<Subject>) => {
-    setSubjects((prev) => prev.map((s) => (s.id === id ? { ...s, ...data } : s)));
+  const updateSubject = async (id: string, data: Partial<Subject>) => {
+    const nextSubjects = subjects.map((s) => (s.id === id ? { ...s, ...data } : s));
+    setSubjects(nextSubjects);
+
+    if (user) {
+      try {
+        localStorage.setItem(`${STORAGE_KEY}_${user.id}_subjects`, JSON.stringify(nextSubjects));
+      } catch (e) {
+        console.error("Local storage error:", e);
+      }
+
+      if (isSupabaseConfigured) {
+        setSyncStatus("syncing");
+        await supabaseService.saveSubjects(user.id, nextSubjects);
+        setSyncStatus("synced");
+      }
+    }
   };
 
-  const deleteSubject = (id: string) => {
-    setSubjects((prev) => prev.filter((s) => s.id !== id));
+  const deleteSubject = async (id: string) => {
+    const nextSubjects = subjects.filter((s) => s.id !== id);
+    setSubjects(nextSubjects);
     setGradeRecords((prev) => prev.filter((r) => r.subjectId !== id));
+
+    if (user) {
+      try {
+        localStorage.setItem(`${STORAGE_KEY}_${user.id}_subjects`, JSON.stringify(nextSubjects));
+      } catch (e) {
+        console.error("Local storage error:", e);
+      }
+
+      if (isSupabaseConfigured) {
+        setSyncStatus("syncing");
+        await supabaseService.deleteSubject(user.id, id);
+        setSyncStatus("synced");
+      }
+    }
   };
 
-  const addBab = (subjectId: string, babData: Omit<Bab, "id" | "tps">) => {
+  const addBab = async (subjectId: string, babData: Omit<Bab, "id" | "tps">) => {
     const newBab: Bab = {
       ...babData,
       id: `bab-${Date.now()}`,
       tps: []
     };
-    setSubjects((prev) =>
-      prev.map((sub) =>
-        sub.id === subjectId ? { ...sub, babs: [...sub.babs, newBab] } : sub
-      )
+    const nextSubjects = subjects.map((sub) =>
+      sub.id === subjectId ? { ...sub, babs: [...sub.babs, newBab] } : sub
     );
+    setSubjects(nextSubjects);
+
+    if (user) {
+      try {
+        localStorage.setItem(`${STORAGE_KEY}_${user.id}_subjects`, JSON.stringify(nextSubjects));
+      } catch (e) {
+        console.error("Local storage error:", e);
+      }
+
+      if (isSupabaseConfigured) {
+        setSyncStatus("syncing");
+        await supabaseService.saveSubjects(user.id, nextSubjects);
+        setSyncStatus("synced");
+      }
+    }
   };
 
-  const updateBab = (subjectId: string, babId: string, data: Partial<Bab>) => {
-    setSubjects((prev) =>
-      prev.map((sub) => {
-        if (sub.id !== subjectId) return sub;
-        return {
-          ...sub,
-          babs: sub.babs.map((b) => (b.id === babId ? { ...b, ...data } : b))
-        };
-      })
-    );
+  const updateBab = async (subjectId: string, babId: string, data: Partial<Bab>) => {
+    const nextSubjects = subjects.map((sub) => {
+      if (sub.id !== subjectId) return sub;
+      return {
+        ...sub,
+        babs: sub.babs.map((b) => (b.id === babId ? { ...b, ...data } : b))
+      };
+    });
+    setSubjects(nextSubjects);
+
+    if (user) {
+      try {
+        localStorage.setItem(`${STORAGE_KEY}_${user.id}_subjects`, JSON.stringify(nextSubjects));
+      } catch (e) {
+        console.error("Local storage error:", e);
+      }
+
+      if (isSupabaseConfigured) {
+        setSyncStatus("syncing");
+        await supabaseService.saveSubjects(user.id, nextSubjects);
+        setSyncStatus("synced");
+      }
+    }
   };
 
-  const deleteBab = (subjectId: string, babId: string) => {
-    setSubjects((prev) =>
-      prev.map((sub) => {
-        if (sub.id !== subjectId) return sub;
-        return {
-          ...sub,
-          babs: sub.babs.filter((b) => b.id !== babId)
-        };
-      })
-    );
+  const deleteBab = async (subjectId: string, babId: string) => {
+    const nextSubjects = subjects.map((sub) => {
+      if (sub.id !== subjectId) return sub;
+      return {
+        ...sub,
+        babs: sub.babs.filter((b) => b.id !== babId)
+      };
+    });
+    setSubjects(nextSubjects);
+
+    if (user) {
+      try {
+        localStorage.setItem(`${STORAGE_KEY}_${user.id}_subjects`, JSON.stringify(nextSubjects));
+      } catch (e) {
+        console.error("Local storage error:", e);
+      }
+
+      if (isSupabaseConfigured) {
+        setSyncStatus("syncing");
+        await supabaseService.saveSubjects(user.id, nextSubjects);
+        setSyncStatus("synced");
+      }
+    }
   };
 
-  const addTp = (subjectId: string, babId: string, tpData: Omit<TujuanPembelajaran, "id" | "babId">) => {
+  const addTp = async (subjectId: string, babId: string, tpData: Omit<TujuanPembelajaran, "id" | "babId">) => {
     const newTp: TujuanPembelajaran = {
       ...tpData,
       id: `tp-${Date.now()}`,
       babId
     };
-    setSubjects((prev) =>
-      prev.map((sub) => {
-        if (sub.id !== subjectId) return sub;
-        return {
-          ...sub,
-          babs: sub.babs.map((b) =>
-            b.id === babId ? { ...b, tps: [...b.tps, newTp] } : b
-          )
-        };
-      })
-    );
+    const nextSubjects = subjects.map((sub) => {
+      if (sub.id !== subjectId) return sub;
+      return {
+        ...sub,
+        babs: sub.babs.map((b) =>
+          b.id === babId ? { ...b, tps: [...b.tps, newTp] } : b
+        )
+      };
+    });
+    setSubjects(nextSubjects);
+
+    if (user) {
+      try {
+        localStorage.setItem(`${STORAGE_KEY}_${user.id}_subjects`, JSON.stringify(nextSubjects));
+      } catch (e) {
+        console.error("Local storage error:", e);
+      }
+
+      if (isSupabaseConfigured) {
+        setSyncStatus("syncing");
+        await supabaseService.saveSubjects(user.id, nextSubjects);
+        setSyncStatus("synced");
+      }
+    }
   };
 
-  const updateTp = (subjectId: string, babId: string, tpId: string, data: Partial<TujuanPembelajaran>) => {
-    setSubjects((prev) =>
-      prev.map((sub) => {
-        if (sub.id !== subjectId) return sub;
-        return {
-          ...sub,
-          babs: sub.babs.map((b) => {
-            if (b.id !== babId) return b;
-            return {
-              ...b,
-              tps: b.tps.map((tp) => (tp.id === tpId ? { ...tp, ...data } : tp))
-            };
-          })
-        };
-      })
-    );
+  const updateTp = async (subjectId: string, babId: string, tpId: string, data: Partial<TujuanPembelajaran>) => {
+    const nextSubjects = subjects.map((sub) => {
+      if (sub.id !== subjectId) return sub;
+      return {
+        ...sub,
+        babs: sub.babs.map((b) => {
+          if (b.id !== babId) return b;
+          return {
+            ...b,
+            tps: b.tps.map((tp) => (tp.id === tpId ? { ...tp, ...data } : tp))
+          };
+        })
+      };
+    });
+    setSubjects(nextSubjects);
+
+    if (user) {
+      try {
+        localStorage.setItem(`${STORAGE_KEY}_${user.id}_subjects`, JSON.stringify(nextSubjects));
+      } catch (e) {
+        console.error("Local storage error:", e);
+      }
+
+      if (isSupabaseConfigured) {
+        setSyncStatus("syncing");
+        await supabaseService.saveSubjects(user.id, nextSubjects);
+        setSyncStatus("synced");
+      }
+    }
   };
 
-  const deleteTp = (subjectId: string, babId: string, tpId: string) => {
-    setSubjects((prev) =>
-      prev.map((sub) => {
-        if (sub.id !== subjectId) return sub;
-        return {
-          ...sub,
-          babs: sub.babs.map((b) => {
-            if (b.id !== babId) return b;
-            return {
-              ...b,
-              tps: b.tps.filter((tp) => tp.id !== tpId)
-            };
-          })
-        };
-      })
-    );
+  const deleteTp = async (subjectId: string, babId: string, tpId: string) => {
+    const nextSubjects = subjects.map((sub) => {
+      if (sub.id !== subjectId) return sub;
+      return {
+        ...sub,
+        babs: sub.babs.map((b) => {
+          if (b.id !== babId) return b;
+          return {
+            ...b,
+            tps: b.tps.filter((tp) => tp.id !== tpId)
+          };
+        })
+      };
+    });
+    setSubjects(nextSubjects);
+
+    if (user) {
+      try {
+        localStorage.setItem(`${STORAGE_KEY}_${user.id}_subjects`, JSON.stringify(nextSubjects));
+      } catch (e) {
+        console.error("Local storage error:", e);
+      }
+
+      if (isSupabaseConfigured) {
+        setSyncStatus("syncing");
+        await supabaseService.saveSubjects(user.id, nextSubjects);
+        setSyncStatus("synced");
+      }
+    }
   };
 
   // Grade record actions
@@ -842,12 +1094,61 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
 
       if (user && isSupabaseConfigured) {
+        // Direct save to sipena_nilai with user_id, siswa_id, mapel_id, bab_id, nilai
+        let babId = "";
+        let jenisPenilaian = "";
+        let tpId: string | undefined = undefined;
+
+        if (section === "formatif") {
+          if (field === "tpScores" && subKey) {
+            babId = subKey;
+            tpId = subKey;
+            jenisPenilaian = "formatif_tp";
+          } else {
+            babId = `formatif_${field}`;
+            jenisPenilaian = `formatif_${field}`;
+          }
+        } else if (section === "sumatif") {
+          if (field === "babScores" && subKey) {
+            babId = subKey;
+            jenisPenilaian = "sumatif_bab";
+          } else {
+            babId = field;
+            jenisPenilaian = field;
+          }
+        }
+
+        if (babId) {
+          supabaseService.saveDirectScore(user.id, studentId, subjectId, babId, value, {
+            tpId,
+            semester,
+            jenisPenilaian
+          });
+        }
+
+        // Also persist full record for redundancy
         supabaseService.saveSingleGradeRecord(user.id, baseRecord);
       }
 
       return nextRecords;
     });
   };
+
+  const refreshGradeRecords = useCallback(async () => {
+    if (!user || !isSupabaseConfigured) return;
+    setIsRefreshingGrades(true);
+    try {
+      const freshGrades = await supabaseService.fetchGradeRecords(user.id);
+      if (freshGrades !== null) {
+        setGradeRecords(freshGrades);
+        localStorage.setItem(`${STORAGE_KEY}_${user.id}_grades`, JSON.stringify(freshGrades));
+      }
+    } catch (err) {
+      console.warn("Error refreshing grades from Supabase:", err);
+    } finally {
+      setIsRefreshingGrades(false);
+    }
+  }, [user]);
 
   // Reset & Backup
   const resetToDefaultData = () => {
@@ -948,6 +1249,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         getGradeRecord,
         updateGradeRecord,
         updateStudentGradeField,
+        isRefreshingGrades,
+        refreshGradeRecords,
         activeTab,
         setActiveTab,
         selectedSubjectId,

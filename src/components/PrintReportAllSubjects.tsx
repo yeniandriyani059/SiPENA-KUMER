@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useApp } from "../context/AppContext";
 import { calculateStudentGrades, safeAverage } from "../utils/gradeCalculations";
 import { SignatureBlock } from "./SignatureBlock";
@@ -13,7 +13,8 @@ import {
   AlertTriangle,
   Users,
   Info,
-  Layers
+  Layers,
+  Database
 } from "lucide-react";
 
 export const PrintReportAllSubjects: React.FC = () => {
@@ -27,8 +28,14 @@ export const PrintReportAllSubjects: React.FC = () => {
     rekapMode,
     setRekapMode,
     rekapTesVariant,
-    setRekapTesVariant
+    setRekapTesVariant,
+    refreshGradeRecords
   } = useApp();
+
+  // Auto-fetch real-time grade records from Supabase on mount, semester change, or rekapMode change
+  useEffect(() => {
+    refreshGradeRecords();
+  }, [selectedSemester, rekapMode, refreshGradeRecords]);
 
   const [includeParentSignature, setIncludeParentSignature] = useState<boolean>(true);
 
