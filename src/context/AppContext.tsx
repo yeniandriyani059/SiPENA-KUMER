@@ -82,6 +82,7 @@ interface AppContextType {
   gradeRecords: StudentGradeRecord[];
   getGradeRecord: (studentId: string, subjectId: string, semester: "1" | "2") => StudentGradeRecord | undefined;
   updateGradeRecord: (record: StudentGradeRecord) => void;
+  mergeGradeRecords: (records: StudentGradeRecord[]) => void;
   updateStudentGradeField: (
     studentId: string,
     subjectId: string,
@@ -155,8 +156,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const cachedSchool = localStorage.getItem(`${STORAGE_KEY}_${userId}_school`);
     const cachedStudents = localStorage.getItem(`${STORAGE_KEY}_${userId}_students`);
     const cachedSubjects = localStorage.getItem(`${STORAGE_KEY}_${userId}_subjects`);
-    const cachedGrades = localStorage.getItem(`${STORAGE_KEY}_${userId}_grades`);
     const cachedProfile = localStorage.getItem(`${STORAGE_KEY}_${userId}_profile`);
+    // NOTE: Grades are intentionally never loaded from localStorage (Cloud Supabase is single source of truth)
+    setGradeRecords([]);
+    localStorage.removeItem(`${STORAGE_KEY}_${userId}_grades`);
 
     if (cachedSchool) {
       try {
@@ -210,22 +213,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     } else {
       setSubjects([]);
-    }
-
-    if (cachedGrades) {
-      try {
-        const parsed = JSON.parse(cachedGrades);
-        if (Array.isArray(parsed) && parsed.some((g: any) => g.studentId === "std-1")) {
-          localStorage.removeItem(`${STORAGE_KEY}_${userId}_grades`);
-          setGradeRecords([]);
-        } else {
-          setGradeRecords(Array.isArray(parsed) ? parsed : []);
-        }
-      } catch (e) {
-        setGradeRecords([]);
-      }
-    } else {
-      setGradeRecords([]);
     }
 
     // Check cached activation status
@@ -308,7 +295,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         if (cloudGrades !== null) {
           setGradeRecords(cloudGrades);
-          localStorage.setItem(`${STORAGE_KEY}_${userId}_grades`, JSON.stringify(cloudGrades));
+          // Do not write grades to localStorage - Supabase is single source of truth
         }
 
         setSyncStatus("synced");
@@ -454,12 +441,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!user || !isDataInitializedRef.current) return;
     const userId = user.id;
 
-    try {
-      localStorage.setItem(`${STORAGE_KEY}_${userId}_grades`, JSON.stringify(gradeRecords));
-    } catch (e) {
-      console.error("Local storage error:", e);
-    }
-
+    // NOTE: Sesuai instruksi, grades TIDAK disimpan ke localStorage (hanya Cloud Supabase & state)
     if (isSupabaseConfigured) {
       const timer = setTimeout(() => {
         supabaseService.saveGradeRecords(userId, gradeRecords);
@@ -1094,34 +1076,44 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
 
       if (user && isSupabaseConfigured) {
-        // Direct save to sipena_nilai with user_id, siswa_id, mapel_id, bab_id, nilai
+        // Direct save to sipena_nilai with user_id, siswa_id, mapel_id, semester, kolom_penilaian, nilai
         let babId = "";
         let jenisPenilaian = "";
         let tpId: string | undefined = undefined;
+        let kolomPenilaian = "";
 
         if (section === "formatif") {
           if (field === "tpScores" && subKey) {
             babId = subKey;
             tpId = subKey;
+            kolomPenilaian = subKey;
             jenisPenilaian = "formatif_tp";
           } else {
             babId = `formatif_${field}`;
+            kolomPenilaian = field;
             jenisPenilaian = `formatif_${field}`;
           }
         } else if (section === "sumatif") {
           if (field === "babScores" && subKey) {
             babId = subKey;
+            kolomPenilaian = subKey;
             jenisPenilaian = "sumatif_bab";
           } else {
             babId = field;
+            kolomPenilaian = field;
             jenisPenilaian = field;
           }
         }
 
-        if (babId) {
-          supabaseService.saveDirectScore(user.id, studentId, subjectId, babId, value, {
-            tpId,
+        if (babId || kolomPenilaian) {
+          supabaseService.saveDirectGradeScore(user.id, {
+            siswaId: studentId,
+            mapelId: subjectId,
             semester,
+            kolomPenilaian: kolomPenilaian || babId,
+            nilai: value,
+            babId,
+            tpId,
             jenisPenilaian
           });
         }
@@ -1134,21 +1126,53 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
+  const mergeGradeRecords = useCallback((newRecords: StudentGradeRecord[]) => {
+    if (!newRecords || newRecords.length === 0) return;
+    setGradeRecords((prev) => {
+      const map = new Map<string, StudentGradeRecord>();
+      prev.forEach((r) => map.set(`${r.studentId}_${r.subjectId}_${r.semester}`, r));
+
+      newRecords.forEach((nr) => {
+        const key = `${nr.studentId}_${nr.subjectId}_${nr.semester}`;
+        const existing = map.get(key);
+        if (!existing) {
+          map.set(key, nr);
+        } else {
+          map.set(key, {
+            ...existing,
+            ...nr,
+            formatif: {
+              ...existing.formatif,
+              ...nr.formatif,
+              tpScores: { ...existing.formatif.tpScores, ...nr.formatif.tpScores }
+            },
+            sumatif: {
+              ...existing.sumatif,
+              ...nr.sumatif,
+              babScores: { ...existing.sumatif.babScores, ...nr.sumatif.babScores }
+            }
+          });
+        }
+      });
+
+      return Array.from(map.values());
+    });
+  }, []);
+
   const refreshGradeRecords = useCallback(async () => {
     if (!user || !isSupabaseConfigured) return;
     setIsRefreshingGrades(true);
     try {
-      const freshGrades = await supabaseService.fetchGradeRecords(user.id);
+      const freshGrades = await supabaseService.fetchGradeRecords(user.id, subjects);
       if (freshGrades !== null) {
         setGradeRecords(freshGrades);
-        localStorage.setItem(`${STORAGE_KEY}_${user.id}_grades`, JSON.stringify(freshGrades));
       }
     } catch (err) {
       console.warn("Error refreshing grades from Supabase:", err);
     } finally {
       setIsRefreshingGrades(false);
     }
-  }, [user]);
+  }, [user, subjects]);
 
   // Reset & Backup
   const resetToDefaultData = () => {
@@ -1248,6 +1272,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         gradeRecords,
         getGradeRecord,
         updateGradeRecord,
+        mergeGradeRecords,
         updateStudentGradeField,
         isRefreshingGrades,
         refreshGradeRecords,

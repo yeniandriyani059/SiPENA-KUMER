@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useApp } from "../context/AppContext";
 import { calculateStudentGrades } from "../utils/gradeCalculations";
+import { supabaseService } from "../services/supabaseService";
 import {
   FileSpreadsheet,
   CheckCircle2,
@@ -16,7 +17,9 @@ import {
   X,
   ChevronLeft,
   ChevronRight,
-  RotateCcw
+  RotateCcw,
+  Cloud,
+  Check
 } from "lucide-react";
 
 const KOKURIKULER_PRESETS = [
@@ -40,6 +43,7 @@ const KOKURIKULER_PRESETS = [
 
 export const GradeInput: React.FC = () => {
   const {
+    user,
     students,
     subjects,
     selectedSubjectId,
@@ -59,6 +63,9 @@ export const GradeInput: React.FC = () => {
 
   const [activeSectionView, setActiveSectionView] = useState<"all" | "formatif" | "sumatif">("all");
   const [searchTerm, setSearchTerm] = useState("");
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">("idle");
+  const debounceTimersRef = useRef<{ [key: string]: any }>({});
+
   const [editingNoteStudent, setEditingNoteStudent] = useState<{
     id: string;
     nama: string;
@@ -93,13 +100,51 @@ export const GradeInput: React.FC = () => {
       s.noInduk.includes(searchTerm)
   );
 
-  // Parse numeric input value safely
+  // Directly upsert single score into Supabase sipena_nilai
+  const saveToSupabase = async (
+    studentId: string,
+    kolomPenilaian: string,
+    val: number | null,
+    babId?: string,
+    tpId?: string,
+    jenisPenilaian?: string
+  ) => {
+    if (!user) return;
+    setSaveStatus("saving");
+    try {
+      const ok = await supabaseService.saveDirectGradeScore(user.id, {
+        siswaId: studentId,
+        mapelId: currentSubject.id,
+        semester: selectedSemester,
+        kolomPenilaian,
+        nilai: val,
+        babId,
+        tpId,
+        jenisPenilaian
+      });
+      if (ok) {
+        setSaveStatus("saved");
+        setTimeout(() => setSaveStatus("idle"), 2500);
+      } else {
+        setSaveStatus("idle");
+      }
+    } catch (e) {
+      console.warn("Auto-save to Supabase failed:", e);
+      setSaveStatus("idle");
+    }
+  };
+
+  // Immediate state update + debounced Cloud Supabase upsert
   const handleScoreChange = (
     studentId: string,
     section: "formatif" | "sumatif",
     field: string,
     rawVal: string,
-    subKey?: string
+    subKey?: string,
+    kolomPenilaian?: string,
+    babId?: string,
+    tpId?: string,
+    jenisPenilaian?: string
   ) => {
     let parsed: number | null = null;
     if (rawVal.trim() !== "") {
@@ -108,7 +153,37 @@ export const GradeInput: React.FC = () => {
         parsed = Math.min(100, Math.max(0, num));
       }
     }
+    // 1. Instant update in local state for zero lag & immediate calculation of NA / Tuntas
     updateStudentGradeField(studentId, currentSubject.id, selectedSemester, section, field, parsed, subKey);
+
+    // 2. Debounced auto-save to Cloud Supabase
+    const targetKolom = (kolomPenilaian || subKey || field).toLowerCase().replace(/[^a-z0-9_]/g, "");
+    const timerKey = `${studentId}_${targetKolom}`;
+    if (debounceTimersRef.current[timerKey]) {
+      clearTimeout(debounceTimersRef.current[timerKey]);
+    }
+    debounceTimersRef.current[timerKey] = setTimeout(() => {
+      delete debounceTimersRef.current[timerKey];
+      saveToSupabase(studentId, targetKolom, parsed, babId, tpId, jenisPenilaian);
+    }, 600);
+  };
+
+  // Immediate save on blur (cancels any pending debounce)
+  const handleScoreBlur = (
+    studentId: string,
+    kolomPenilaian: string,
+    val: number | null,
+    babId?: string,
+    tpId?: string,
+    jenisPenilaian?: string
+  ) => {
+    const targetKolom = kolomPenilaian.toLowerCase().replace(/[^a-z0-9_]/g, "");
+    const timerKey = `${studentId}_${targetKolom}`;
+    if (debounceTimersRef.current[timerKey]) {
+      clearTimeout(debounceTimersRef.current[timerKey]);
+      delete debounceTimersRef.current[timerKey];
+    }
+    saveToSupabase(studentId, targetKolom, val, babId, tpId, jenisPenilaian);
   };
 
   // Quick stats for current table
@@ -148,61 +223,79 @@ export const GradeInput: React.FC = () => {
       <div className="bg-white rounded-xl border border-slate-200 shadow-xs p-4">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           {/* Subject & Semester selection */}
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="flex items-center gap-2">
-              <label className="text-xs font-semibold text-slate-600">Mapel:</label>
-              <select
-                value={selectedSubjectId}
-                onChange={(e) => setSelectedSubjectId(e.target.value)}
-                className="px-3 py-1.5 text-xs sm:text-sm font-bold border border-indigo-200 bg-indigo-50/50 text-indigo-900 rounded-lg focus:ring-2 focus:ring-indigo-500"
-              >
-                {subjects.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.kode} - {s.nama} (KKTP: {s.kktp})
-                  </option>
-                ))}
-              </select>
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-2">
+                <label className="text-xs font-semibold text-slate-600">Mapel:</label>
+                <select
+                  value={selectedSubjectId}
+                  onChange={(e) => setSelectedSubjectId(e.target.value)}
+                  className="px-3 py-1.5 text-xs sm:text-sm font-bold border border-indigo-200 bg-indigo-50/50 text-indigo-900 rounded-lg focus:ring-2 focus:ring-indigo-500"
+                >
+                  {subjects.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.kode} - {s.nama} (KKTP: {s.kktp})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <label className="text-xs font-semibold text-slate-600">Semester:</label>
+                <select
+                  value={selectedSemester}
+                  onChange={(e) => setSelectedSemester(e.target.value as "1" | "2")}
+                  className="px-3 py-1.5 text-xs font-semibold border border-slate-300 bg-white text-slate-800 rounded-lg"
+                >
+                  <option value="1">Semester 1 (Ganjil)</option>
+                  <option value="2">Semester 2 (Genap)</option>
+                </select>
+              </div>
+
+              {/* View Mode Filters */}
+              <div className="inline-flex rounded-lg p-0.5 bg-slate-100 border border-slate-200 text-xs font-medium">
+                <button
+                  onClick={() => setActiveSectionView("all")}
+                  className={`px-2.5 py-1 rounded-md transition-all ${
+                    activeSectionView === "all" ? "bg-white text-indigo-700 shadow-xs font-semibold" : "text-slate-600"
+                  }`}
+                >
+                  Semua Kolom
+                </button>
+                <button
+                  onClick={() => setActiveSectionView("formatif")}
+                  className={`px-2.5 py-1 rounded-md transition-all ${
+                    activeSectionView === "formatif" ? "bg-white text-indigo-700 shadow-xs font-semibold" : "text-slate-600"
+                  }`}
+                >
+                  Formatif (Proses)
+                </button>
+                <button
+                  onClick={() => setActiveSectionView("sumatif")}
+                  className={`px-2.5 py-1 rounded-md transition-all ${
+                    activeSectionView === "sumatif" ? "bg-white text-indigo-700 shadow-xs font-semibold" : "text-slate-600"
+                  }`}
+                >
+                  Sumatif (LM & Tes)
+                </button>
+              </div>
             </div>
 
-            <div className="flex items-center gap-2">
-              <label className="text-xs font-semibold text-slate-600">Semester:</label>
-              <select
-                value={selectedSemester}
-                onChange={(e) => setSelectedSemester(e.target.value as "1" | "2")}
-                className="px-3 py-1.5 text-xs font-semibold border border-slate-300 bg-white text-slate-800 rounded-lg"
-              >
-                <option value="1">Semester 1 (Ganjil)</option>
-                <option value="2">Semester 2 (Genap)</option>
-              </select>
-            </div>
-
-            {/* View Mode Filters */}
-            <div className="inline-flex rounded-lg p-0.5 bg-slate-100 border border-slate-200 text-xs font-medium">
-              <button
-                onClick={() => setActiveSectionView("all")}
-                className={`px-2.5 py-1 rounded-md transition-all ${
-                  activeSectionView === "all" ? "bg-white text-indigo-700 shadow-xs font-semibold" : "text-slate-600"
-                }`}
-              >
-                Semua Kolom
-              </button>
-              <button
-                onClick={() => setActiveSectionView("formatif")}
-                className={`px-2.5 py-1 rounded-md transition-all ${
-                  activeSectionView === "formatif" ? "bg-white text-indigo-700 shadow-xs font-semibold" : "text-slate-600"
-                }`}
-              >
-                Formatif (Proses)
-              </button>
-              <button
-                onClick={() => setActiveSectionView("sumatif")}
-                className={`px-2.5 py-1 rounded-md transition-all ${
-                  activeSectionView === "sumatif" ? "bg-white text-indigo-700 shadow-xs font-semibold" : "text-slate-600"
-                }`}
-              >
-                Sumatif (LM & Tes)
-              </button>
-            </div>
+            {/* Helper text required: *Nilai otomatis tersimpan ke Cloud Supabase* */}
+            <p className="text-[11px] text-slate-500 italic flex items-center gap-1.5 pt-0.5">
+              <span className={`inline-block w-2 h-2 rounded-full ${saveStatus === "saving" ? "bg-amber-500 animate-ping" : saveStatus === "saved" ? "bg-emerald-500" : "bg-emerald-500"}`}></span>
+              *Nilai otomatis tersimpan ke Cloud Supabase*
+              {saveStatus === "saving" && (
+                <span className="not-italic text-amber-600 font-semibold ml-2">
+                  (Menyimpan ke Cloud...)
+                </span>
+              )}
+              {saveStatus === "saved" && (
+                <span className="not-italic text-emerald-600 font-semibold ml-2">
+                  (✓ Tersimpan di Cloud Supabase)
+                </span>
+              )}
+            </p>
           </div>
 
           {/* Right Action Tools */}
@@ -456,7 +549,8 @@ export const GradeInput: React.FC = () => {
                             );
                           }
                           return bab.tps.map((tp) => {
-                            const val = record?.formatif.tpScores[tp.id] ?? "";
+                            const cleanKode = tp.kode.toLowerCase().replace(/[^a-z0-9_]/g, "");
+                            const val = record?.formatif.tpScores[tp.id] ?? record?.formatif.tpScores[cleanKode] ?? "";
                             return (
                               <td key={tp.id} className="p-0.5 border border-slate-200">
                                 <input
@@ -465,8 +559,22 @@ export const GradeInput: React.FC = () => {
                                   max="100"
                                   value={val}
                                   onChange={(e) =>
-                                    handleScoreChange(student.id, "formatif", "tpScores", e.target.value, tp.id)
+                                    handleScoreChange(
+                                      student.id,
+                                      "formatif",
+                                      "tpScores",
+                                      e.target.value,
+                                      tp.id,
+                                      cleanKode,
+                                      bab.id,
+                                      tp.id,
+                                      "formatif_tp"
+                                    )
                                   }
+                                  onBlur={(e) => {
+                                    const num = e.target.value.trim() === "" ? null : Number(e.target.value);
+                                    handleScoreBlur(student.id, cleanKode, num, bab.id, tp.id, "formatif_tp");
+                                  }}
                                   className="w-full text-center py-1 text-xs focus:bg-sky-50 focus:outline-hidden font-mono"
                                   placeholder="-"
                                 />
@@ -483,8 +591,22 @@ export const GradeInput: React.FC = () => {
                             max="100"
                             value={record?.formatif.ulanganHarian ?? ""}
                             onChange={(e) =>
-                              handleScoreChange(student.id, "formatif", "ulanganHarian", e.target.value)
+                              handleScoreChange(
+                                student.id,
+                                "formatif",
+                                "ulanganHarian",
+                                e.target.value,
+                                undefined,
+                                "uh",
+                                "formatif_uh",
+                                undefined,
+                                "formatif_uh"
+                              )
                             }
+                            onBlur={(e) => {
+                              const num = e.target.value.trim() === "" ? null : Number(e.target.value);
+                              handleScoreBlur(student.id, "uh", num, "formatif_uh", undefined, "formatif_uh");
+                            }}
                             className="w-full text-center py-1 text-xs focus:bg-indigo-50 focus:outline-hidden font-mono"
                             placeholder="-"
                           />
@@ -498,8 +620,22 @@ export const GradeInput: React.FC = () => {
                             max="100"
                             value={record?.formatif.tugasRutin ?? ""}
                             onChange={(e) =>
-                              handleScoreChange(student.id, "formatif", "tugasRutin", e.target.value)
+                              handleScoreChange(
+                                student.id,
+                                "formatif",
+                                "tugasRutin",
+                                e.target.value,
+                                undefined,
+                                "tugas",
+                                "formatif_tugas",
+                                undefined,
+                                "formatif_tugas"
+                              )
                             }
+                            onBlur={(e) => {
+                              const num = e.target.value.trim() === "" ? null : Number(e.target.value);
+                              handleScoreBlur(student.id, "tugas", num, "formatif_tugas", undefined, "formatif_tugas");
+                            }}
                             className="w-full text-center py-1 text-xs focus:bg-indigo-50 focus:outline-hidden font-mono"
                             placeholder="-"
                           />
@@ -513,8 +649,22 @@ export const GradeInput: React.FC = () => {
                             max="100"
                             value={record?.formatif.praktikProyek ?? ""}
                             onChange={(e) =>
-                              handleScoreChange(student.id, "formatif", "praktikProyek", e.target.value)
+                              handleScoreChange(
+                                student.id,
+                                "formatif",
+                                "praktikProyek",
+                                e.target.value,
+                                undefined,
+                                "proyek",
+                                "formatif_proyek",
+                                undefined,
+                                "formatif_proyek"
+                              )
                             }
+                            onBlur={(e) => {
+                              const num = e.target.value.trim() === "" ? null : Number(e.target.value);
+                              handleScoreBlur(student.id, "proyek", num, "formatif_proyek", undefined, "formatif_proyek");
+                            }}
                             className="w-full text-center py-1 text-xs focus:bg-indigo-50 focus:outline-hidden font-mono"
                             placeholder="-"
                           />
@@ -526,7 +676,8 @@ export const GradeInput: React.FC = () => {
                     {(activeSectionView === "all" || activeSectionView === "sumatif") && (
                       <>
                         {currentSubject.babs.map((bab) => {
-                          const val = record?.sumatif.babScores[bab.id] ?? "";
+                          const cleanBab = bab.nama.toLowerCase().replace(/[^a-z0-9_]/g, "");
+                          const val = record?.sumatif.babScores[bab.id] ?? record?.sumatif.babScores[cleanBab] ?? "";
                           return (
                             <td key={bab.id} className="p-0.5 border border-slate-200">
                               <input
@@ -535,8 +686,22 @@ export const GradeInput: React.FC = () => {
                                 max="100"
                                 value={val}
                                 onChange={(e) =>
-                                  handleScoreChange(student.id, "sumatif", "babScores", e.target.value, bab.id)
+                                  handleScoreChange(
+                                    student.id,
+                                    "sumatif",
+                                    "babScores",
+                                    e.target.value,
+                                    bab.id,
+                                    cleanBab,
+                                    bab.id,
+                                    undefined,
+                                    "sumatif_bab"
+                                  )
                                 }
+                                onBlur={(e) => {
+                                  const num = e.target.value.trim() === "" ? null : Number(e.target.value);
+                                  handleScoreBlur(student.id, cleanBab, num, bab.id, undefined, "sumatif_bab");
+                                }}
                                 className="w-full text-center py-1 text-xs focus:bg-amber-50 focus:outline-hidden font-mono font-medium"
                                 placeholder="-"
                               />
@@ -552,8 +717,22 @@ export const GradeInput: React.FC = () => {
                             max="100"
                             value={record?.sumatif.astsNonTes ?? ""}
                             onChange={(e) =>
-                              handleScoreChange(student.id, "sumatif", "astsNonTes", e.target.value)
+                              handleScoreChange(
+                                student.id,
+                                "sumatif",
+                                "astsNonTes",
+                                e.target.value,
+                                undefined,
+                                "asts_non_tes",
+                                "asts_non_tes",
+                                undefined,
+                                "asts_non_tes"
+                              )
                             }
+                            onBlur={(e) => {
+                              const num = e.target.value.trim() === "" ? null : Number(e.target.value);
+                              handleScoreBlur(student.id, "asts_non_tes", num, "asts_non_tes", undefined, "asts_non_tes");
+                            }}
                             className="w-full text-center py-1 text-xs focus:bg-orange-50 focus:outline-hidden font-mono"
                             placeholder="-"
                           />
@@ -567,8 +746,22 @@ export const GradeInput: React.FC = () => {
                             max="100"
                             value={record?.sumatif.astsTes ?? ""}
                             onChange={(e) =>
-                              handleScoreChange(student.id, "sumatif", "astsTes", e.target.value)
+                              handleScoreChange(
+                                student.id,
+                                "sumatif",
+                                "astsTes",
+                                e.target.value,
+                                undefined,
+                                "asts_tes",
+                                "asts_tes",
+                                undefined,
+                                "asts_tes"
+                              )
                             }
+                            onBlur={(e) => {
+                              const num = e.target.value.trim() === "" ? null : Number(e.target.value);
+                              handleScoreBlur(student.id, "asts_tes", num, "asts_tes", undefined, "asts_tes");
+                            }}
                             className="w-full text-center py-1 text-xs focus:bg-orange-50 focus:outline-hidden font-mono"
                             placeholder="-"
                           />
@@ -582,8 +775,22 @@ export const GradeInput: React.FC = () => {
                             max="100"
                             value={record?.sumatif.asasNonTes ?? ""}
                             onChange={(e) =>
-                              handleScoreChange(student.id, "sumatif", "asasNonTes", e.target.value)
+                              handleScoreChange(
+                                student.id,
+                                "sumatif",
+                                "asasNonTes",
+                                e.target.value,
+                                undefined,
+                                "asas_non_tes",
+                                "asas_non_tes",
+                                undefined,
+                                "asas_non_tes"
+                              )
                             }
+                            onBlur={(e) => {
+                              const num = e.target.value.trim() === "" ? null : Number(e.target.value);
+                              handleScoreBlur(student.id, "asas_non_tes", num, "asas_non_tes", undefined, "asas_non_tes");
+                            }}
                             className="w-full text-center py-1 text-xs focus:bg-red-50 focus:outline-hidden font-mono"
                             placeholder="-"
                           />
@@ -597,8 +804,22 @@ export const GradeInput: React.FC = () => {
                             max="100"
                             value={record?.sumatif.asasTes ?? ""}
                             onChange={(e) =>
-                              handleScoreChange(student.id, "sumatif", "asasTes", e.target.value)
+                              handleScoreChange(
+                                student.id,
+                                "sumatif",
+                                "asasTes",
+                                e.target.value,
+                                undefined,
+                                "asas_tes",
+                                "asas_tes",
+                                undefined,
+                                "asas_tes"
+                              )
                             }
+                            onBlur={(e) => {
+                              const num = e.target.value.trim() === "" ? null : Number(e.target.value);
+                              handleScoreBlur(student.id, "asas_tes", num, "asas_tes", undefined, "asas_tes");
+                            }}
                             className="w-full text-center py-1 text-xs focus:bg-red-50 focus:outline-hidden font-mono"
                             placeholder="-"
                           />

@@ -107,7 +107,8 @@ export const StudentKktpAnalysis: React.FC = () => {
   let tpCounter = 1;
   currentSubject.babs.forEach((bab) => {
     bab.tps.forEach((tp) => {
-      const score = record?.formatif.tpScores[tp.id] ?? null;
+      const cleanKode = tp.kode.toLowerCase().replace(/[^a-z0-9_]/g, "");
+      const score = record?.formatif.tpScores[tp.id] ?? record?.formatif.tpScores[cleanKode] ?? null;
       const evalResult = evaluateKktpInterval(score);
 
       analysisRows.push({

@@ -475,8 +475,144 @@ export const supabaseService = {
     }
   },
 
+  // Helper to parse sipena_nilai rows into StudentGradeRecord array
+  parseSipenaNilaiRows(rows: any[], subjectsList?: Subject[]): StudentGradeRecord[] {
+    if (!Array.isArray(rows) || rows.length === 0) return [];
+
+    const recordsMap = new Map<string, StudentGradeRecord>();
+
+    rows.forEach((row: any) => {
+      const studentId = row.siswa_id || row.student_id;
+      const subjectId = row.mapel_id || row.subject_id;
+      const semester = (row.semester as "1" | "2") || "1";
+      const babId = row.bab_id || "";
+      const tpId = row.tp_id || null;
+      const jenis = (row.jenis_penilaian || "").toLowerCase();
+      const kolom = (row.kolom_penilaian || "").toLowerCase().trim();
+      const rawNilai = row.nilai;
+      const val = rawNilai !== null && rawNilai !== undefined && rawNilai !== "" ? Number(rawNilai) : null;
+      const catatan = row.catatan || "";
+
+      if (!studentId || !subjectId) return;
+
+      const key = `${studentId}_${subjectId}_${semester}`;
+      let rec = recordsMap.get(key);
+      if (!rec) {
+        rec = {
+          studentId,
+          subjectId,
+          semester,
+          formatif: {
+            tpScores: {},
+            ulanganHarian: null,
+            tugasRutin: null,
+            praktikProyek: null,
+            catatanP5: ""
+          },
+          sumatif: {
+            babScores: {},
+            astsNonTes: null,
+            astsTes: null,
+            astsTesRemedial: null,
+            asasNonTes: null,
+            asasTes: null,
+            asasTesRemedial: null
+          }
+        };
+        recordsMap.set(key, rec);
+      }
+
+      if (catatan && !rec.formatif.catatanP5) {
+        rec.formatif.catatanP5 = catatan;
+      }
+
+      // 1. Process explicit row value
+      if (val !== null) {
+        if (kolom.startsWith("tp") || tpId || jenis === "formatif_tp") {
+          const targetKey = tpId || kolom || babId;
+          rec.formatif.tpScores[targetKey] = val;
+          if (kolom) rec.formatif.tpScores[kolom] = val;
+          if (tpId) rec.formatif.tpScores[tpId] = val;
+        } else if (kolom === "uh" || kolom === "formatif_uh" || jenis === "formatif_uh" || babId === "formatif_uh") {
+          rec.formatif.ulanganHarian = val;
+        } else if (kolom === "tugas" || kolom === "formatif_tugas" || jenis === "formatif_tugas" || babId === "formatif_tugas") {
+          rec.formatif.tugasRutin = val;
+        } else if (kolom === "proyek" || kolom === "formatif_proyek" || jenis === "formatif_proyek" || babId === "formatif_proyek") {
+          rec.formatif.praktikProyek = val;
+        } else if (kolom === "catatan_p5" || jenis === "catatan_p5" || babId === "catatan_p5") {
+          if (catatan) rec.formatif.catatanP5 = catatan;
+        } else if (kolom === "asts_tes" || jenis === "asts_tes" || babId === "asts_tes") {
+          rec.sumatif.astsTes = val;
+        } else if (kolom === "asts_non_tes" || jenis === "asts_non_tes" || babId === "asts_non_tes") {
+          rec.sumatif.astsNonTes = val;
+        } else if (kolom === "asts_remedial" || jenis === "asts_remedial" || babId === "asts_remedial") {
+          rec.sumatif.astsTesRemedial = val;
+        } else if (kolom === "asas_tes" || jenis === "asas_tes" || babId === "asas_tes") {
+          rec.sumatif.asasTes = val;
+        } else if (kolom === "asas_non_tes" || jenis === "asas_non_tes" || babId === "asas_non_tes") {
+          rec.sumatif.asasNonTes = val;
+        } else if (kolom === "asas_remedial" || jenis === "asas_remedial" || babId === "asas_remedial") {
+          rec.sumatif.asasTesRemedial = val;
+        } else {
+          // Standard BAB score
+          rec.sumatif.babScores[babId || kolom] = val;
+          if (kolom) rec.sumatif.babScores[kolom] = val;
+        }
+      }
+
+      // 2. Also inspect any flat score columns present on the row object
+      Object.keys(row).forEach((k) => {
+        const lk = k.toLowerCase().replace(/\s+/g, "");
+        const v = row[k];
+        if (v === null || v === undefined || v === "" || isNaN(Number(v))) return;
+        const numVal = Number(v);
+
+        if (lk.startsWith("tp") && lk.length <= 6) {
+          rec.formatif.tpScores[lk] = numVal;
+        } else if (lk === "uh" || lk === "ulangan_harian" || lk === "formatif_uh") {
+          rec.formatif.ulanganHarian = numVal;
+        } else if (lk === "tugas" || lk === "tugas_rutin" || lk === "formatif_tugas") {
+          rec.formatif.tugasRutin = numVal;
+        } else if (lk === "proyek" || lk === "praktik_proyek" || lk === "formatif_proyek") {
+          rec.formatif.praktikProyek = numVal;
+        } else if (lk === "asts_non_tes") {
+          rec.sumatif.astsNonTes = numVal;
+        } else if (lk === "asts_tes") {
+          rec.sumatif.astsTes = numVal;
+        } else if (lk === "asas_non_tes") {
+          rec.sumatif.asasNonTes = numVal;
+        } else if (lk === "asas_tes") {
+          rec.sumatif.asasTes = numVal;
+        } else if (lk.startsWith("bab") && lk.length <= 6) {
+          rec.sumatif.babScores[lk] = numVal;
+        }
+      });
+
+      // 3. Link TP & BAB codes to their IDs if subject metadata is provided
+      if (subjectsList && subjectId) {
+        const matchedSubject = subjectsList.find((s) => s.id === subjectId);
+        if (matchedSubject) {
+          matchedSubject.babs.forEach((bab) => {
+            const cleanBabNama = bab.nama.toLowerCase().replace(/[^a-z0-9_]/g, "");
+            if (rec.sumatif.babScores[cleanBabNama] !== undefined && rec.sumatif.babScores[bab.id] === undefined) {
+              rec.sumatif.babScores[bab.id] = rec.sumatif.babScores[cleanBabNama];
+            }
+            bab.tps.forEach((tp) => {
+              const cleanKode = tp.kode.toLowerCase().replace(/[^a-z0-9_]/g, "");
+              if (rec.formatif.tpScores[cleanKode] !== undefined && rec.formatif.tpScores[tp.id] === undefined) {
+                rec.formatif.tpScores[tp.id] = rec.formatif.tpScores[cleanKode];
+              }
+            });
+          });
+        }
+      }
+    });
+
+    return Array.from(recordsMap.values());
+  },
+
   // 4. GRADE RECORDS (sipena_nilai - Multi-tenant with user_id)
-  async fetchGradeRecords(userId: string): Promise<StudentGradeRecord[] | null> {
+  async fetchGradeRecords(userId: string, subjectsList?: Subject[]): Promise<StudentGradeRecord[] | null> {
     if (!isSupabaseConfigured || !userId) return null;
     try {
       // 1. First priority: sipena_nilai
@@ -489,83 +625,7 @@ export const supabaseService = {
         if (nilaiRows.length === 0) {
           return [];
         }
-
-        // Map combined records by key: `${siswa_id}_${mapel_id}_${semester}`
-        const recordsMap = new Map<string, StudentGradeRecord>();
-
-        nilaiRows.forEach((row: any) => {
-          const studentId = row.siswa_id || row.student_id;
-          const subjectId = row.mapel_id || row.subject_id;
-          const semester = (row.semester as "1" | "2") || "1";
-          const babId = row.bab_id || "";
-          const tpId = row.tp_id || null;
-          const jenis = row.jenis_penilaian || "";
-          const rawNilai = row.nilai;
-          const val = rawNilai !== null && rawNilai !== undefined && rawNilai !== "" ? Number(rawNilai) : null;
-          const catatan = row.catatan || "";
-
-          if (!studentId || !subjectId) return;
-
-          const key = `${studentId}_${subjectId}_${semester}`;
-          let rec = recordsMap.get(key);
-          if (!rec) {
-            rec = {
-              studentId,
-              subjectId,
-              semester,
-              formatif: {
-                tpScores: {},
-                ulanganHarian: null,
-                tugasRutin: null,
-                praktikProyek: null,
-                catatanP5: ""
-              },
-              sumatif: {
-                babScores: {},
-                astsNonTes: null,
-                astsTes: null,
-                astsTesRemedial: null,
-                asasNonTes: null,
-                asasTes: null,
-                asasTesRemedial: null
-              }
-            };
-            recordsMap.set(key, rec);
-          }
-
-          if (catatan && !rec.formatif.catatanP5) {
-            rec.formatif.catatanP5 = catatan;
-          }
-
-          if (tpId || jenis === "formatif_tp") {
-            rec.formatif.tpScores[tpId || babId] = val;
-          } else if (jenis === "formatif_uh" || babId === "formatif_uh") {
-            rec.formatif.ulanganHarian = val;
-          } else if (jenis === "formatif_tugas" || babId === "formatif_tugas") {
-            rec.formatif.tugasRutin = val;
-          } else if (jenis === "formatif_proyek" || babId === "formatif_proyek") {
-            rec.formatif.praktikProyek = val;
-          } else if (jenis === "catatan_p5" || babId === "catatan_p5") {
-            if (catatan) rec.formatif.catatanP5 = catatan;
-          } else if (jenis === "asts_tes" || babId === "asts_tes") {
-            rec.sumatif.astsTes = val;
-          } else if (jenis === "asts_non_tes" || babId === "asts_non_tes") {
-            rec.sumatif.astsNonTes = val;
-          } else if (jenis === "asts_remedial" || babId === "asts_remedial") {
-            rec.sumatif.astsTesRemedial = val;
-          } else if (jenis === "asas_tes" || babId === "asas_tes") {
-            rec.sumatif.asasTes = val;
-          } else if (jenis === "asas_non_tes" || babId === "asas_non_tes") {
-            rec.sumatif.asasNonTes = val;
-          } else if (jenis === "asas_remedial" || babId === "asas_remedial") {
-            rec.sumatif.asasTesRemedial = val;
-          } else {
-            // Standard BAB score
-            rec.sumatif.babScores[babId] = val;
-          }
-        });
-
-        return Array.from(recordsMap.values());
+        return this.parseSipenaNilaiRows(nilaiRows, subjectsList);
       }
 
       // 2. Fallback check for sipena_nilai_formatif and sipena_nilai_sumatif
@@ -974,6 +1034,156 @@ export const supabaseService = {
     }
   },
 
+  // Fetch grade records filtered by specific subject & semester
+  async fetchGradeRecordsBySubject(
+    userId: string,
+    mapelId: string,
+    semester: string,
+    subjectsList?: Subject[]
+  ): Promise<StudentGradeRecord[] | null> {
+    if (!isSupabaseConfigured || !userId || !mapelId) return null;
+    try {
+      const { data: rows, error } = await supabase
+        .from("sipena_nilai")
+        .select("*")
+        .eq("user_id", userId)
+        .eq("mapel_id", mapelId)
+        .eq("semester", semester);
+
+      if (error) {
+        console.warn("Supabase fetchGradeRecordsBySubject warning:", error.message);
+        return null;
+      }
+
+      if (!Array.isArray(rows) || rows.length === 0) {
+        return [];
+      }
+
+      return this.parseSipenaNilaiRows(rows, subjectsList);
+    } catch (err) {
+      console.warn("Supabase fetchGradeRecordsBySubject exception:", err);
+      return null;
+    }
+  },
+
+  // Direct single score update to sipena_nilai with exact schema fields:
+  // user_id, siswa_id, mapel_id, semester, kolom_penilaian, nilai
+  async saveDirectGradeScore(
+    userId: string,
+    params: {
+      siswaId: string;
+      mapelId: string;
+      semester: string;
+      kolomPenilaian: string;
+      nilai: number | null;
+      babId?: string;
+      tpId?: string;
+      jenisPenilaian?: string;
+      catatan?: string;
+    }
+  ): Promise<boolean> {
+    if (!isSupabaseConfigured || !userId || !params.siswaId || !params.mapelId) return false;
+    try {
+      const { siswaId, mapelId, semester, kolomPenilaian, nilai, babId, tpId, jenisPenilaian, catatan } = params;
+      const cleanKolom = (kolomPenilaian || "").toLowerCase().replace(/[^a-z0-9_]/g, "");
+      const sem = semester || "1";
+      const uniqueId = `${userId}_${siswaId}_${mapelId}_${sem}_${cleanKolom}`;
+
+      if (nilai === null || nilai === undefined || isNaN(nilai)) {
+        await supabase
+          .from("sipena_nilai")
+          .delete()
+          .eq("user_id", userId)
+          .eq("siswa_id", siswaId)
+          .eq("mapel_id", mapelId)
+          .eq("semester", sem)
+          .or(`kolom_penilaian.eq.${cleanKolom},bab_id.eq.${babId || cleanKolom},id.eq.${uniqueId}`);
+        return true;
+      }
+
+      const numVal = Number(nilai);
+
+      // 1. Prepare comprehensive record
+      const fullRow: any = {
+        id: uniqueId,
+        user_id: userId,
+        siswa_id: siswaId,
+        mapel_id: mapelId,
+        semester: sem,
+        kolom_penilaian: cleanKolom,
+        nilai: numVal,
+        bab_id: babId || cleanKolom,
+        tp_id: tpId || null,
+        jenis_penilaian: jenisPenilaian || "formatif_tp",
+        catatan: catatan || null,
+        updated_at: new Date().toISOString()
+      };
+
+      // Set dynamic flat column if present in table
+      fullRow[cleanKolom] = numVal;
+
+      // Attempt 1: Full upsert
+      const { error: err1 } = await supabase
+        .from("sipena_nilai")
+        .upsert([fullRow], { onConflict: "id" });
+
+      if (!err1) return true;
+
+      // Attempt 2: If dynamic column fails, strip dynamic column and retry
+      const standardRow: any = {
+        id: uniqueId,
+        user_id: userId,
+        siswa_id: siswaId,
+        mapel_id: mapelId,
+        semester: sem,
+        kolom_penilaian: cleanKolom,
+        nilai: numVal,
+        bab_id: babId || cleanKolom,
+        tp_id: tpId || null,
+        jenis_penilaian: jenisPenilaian || "formatif_tp",
+        catatan: catatan || null,
+        updated_at: new Date().toISOString()
+      };
+
+      const { error: err2 } = await supabase
+        .from("sipena_nilai")
+        .upsert([standardRow], { onConflict: "id" });
+
+      if (!err2) return true;
+
+      // Attempt 3: If kolom_penilaian is not in schema, fallback to bab_id & nilai
+      const fallbackRow: any = {
+        id: uniqueId,
+        user_id: userId,
+        siswa_id: siswaId,
+        mapel_id: mapelId,
+        semester: sem,
+        bab_id: babId || cleanKolom,
+        nilai: numVal,
+        updated_at: new Date().toISOString()
+      };
+
+      const { error: err3 } = await supabase
+        .from("sipena_nilai")
+        .upsert([fallbackRow], { onConflict: "id" });
+
+      if (!err3) return true;
+
+      // Attempt 4: Composite key constraint fallback
+      const { error: err4 } = await supabase
+        .from("sipena_nilai")
+        .upsert([standardRow], { onConflict: "user_id,siswa_id,mapel_id,bab_id,jenis_penilaian,semester" });
+
+      if (!err4) return true;
+
+      console.warn("Supabase saveDirectGradeScore note:", err4.message);
+      return false;
+    } catch (err) {
+      console.warn("Supabase saveDirectGradeScore exception:", err);
+      return false;
+    }
+  },
+
   // Direct single score update to sipena_nilai for instant real-time response
   async saveDirectScore(
     userId: string,
@@ -1012,6 +1222,7 @@ export const supabaseService = {
         siswa_id: siswaId,
         mapel_id: mapelId,
         bab_id: babId,
+        kolom_penilaian: babId,
         nilai: Number(nilai),
         tp_id: extra?.tpId || null,
         semester: sem,

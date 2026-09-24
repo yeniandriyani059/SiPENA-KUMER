@@ -1,11 +1,13 @@
-import React, { useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import { useApp } from "../context/AppContext";
 import { calculateStudentGrades } from "../utils/gradeCalculations";
+import { supabaseService } from "../services/supabaseService";
 import { SignatureBlock } from "./SignatureBlock";
-import { Printer, ArrowLeft, Database } from "lucide-react";
+import { Printer, ArrowLeft, Database, Loader2 } from "lucide-react";
 
 export const PrintReportSubject: React.FC = () => {
   const {
+    user,
     students,
     subjects,
     schoolSettings,
@@ -14,16 +16,45 @@ export const PrintReportSubject: React.FC = () => {
     selectedSemester,
     setSelectedSemester,
     getGradeRecord,
+    mergeGradeRecords,
     refreshGradeRecords,
     setActiveTab
   } = useApp();
 
-  // Auto-fetch real-time grade records from Supabase on mount, semester change, or subject change
-  useEffect(() => {
-    refreshGradeRecords();
-  }, [selectedSemester, selectedSubjectId, refreshGradeRecords]);
+  const [isLoadingGrades, setIsLoadingGrades] = useState(false);
 
   const currentSubject = subjects.find((s) => s.id === selectedSubjectId) || subjects[0];
+
+  // Auto-fetch real-time grade records from Supabase (SELECT sipena_nilai) based on user_id, mapel_id, semester
+  useEffect(() => {
+    let isMounted = true;
+
+    const fetchSubjectData = async () => {
+      if (!user || !currentSubject) return;
+      setIsLoadingGrades(true);
+      try {
+        const fetched = await supabaseService.fetchGradeRecordsBySubject(
+          user.id,
+          currentSubject.id,
+          selectedSemester,
+          subjects
+        );
+        if (isMounted && fetched && fetched.length > 0) {
+          mergeGradeRecords(fetched);
+        }
+      } catch (err) {
+        console.warn("Error fetching subject grades in PrintReportSubject:", err);
+      } finally {
+        if (isMounted) setIsLoadingGrades(false);
+      }
+    };
+
+    fetchSubjectData();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [user, currentSubject?.id, selectedSemester, subjects, mergeGradeRecords]);
 
   if (!currentSubject) {
     return (
@@ -271,7 +302,8 @@ export const PrintReportSubject: React.FC = () => {
                         );
                       }
                       return bab.tps.map((tp) => {
-                        const val = record?.formatif.tpScores[tp.id];
+                        const cleanKode = tp.kode.toLowerCase().replace(/[^a-z0-9_]/g, "");
+                        const val = record?.formatif.tpScores[tp.id] ?? record?.formatif.tpScores[cleanKode];
                         return (
                           <td key={tp.id} className="border border-black p-1 font-mono">
                             {val !== null && val !== undefined ? val : "-"}
@@ -292,7 +324,8 @@ export const PrintReportSubject: React.FC = () => {
 
                     {/* SUMATIF BAB VALUES */}
                     {currentSubject.babs.map((bab) => {
-                      const val = record?.sumatif.babScores[bab.id];
+                      const cleanBab = bab.nama.toLowerCase().replace(/[^a-z0-9_]/g, "");
+                      const val = record?.sumatif.babScores[bab.id] ?? record?.sumatif.babScores[cleanBab];
                       return (
                         <td key={bab.id} className="border border-black p-1 font-mono font-medium">
                           {val !== null && val !== undefined ? val : "-"}
@@ -352,11 +385,14 @@ export const PrintReportSubject: React.FC = () => {
                       </td>
                     );
                   }
-                  return bab.tps.map((tp) => (
-                    <td key={`prt-avg-tp-${tp.id}`} className="border border-black p-1 font-mono text-[9px]">
-                      {getColAvg((item) => item.record?.formatif.tpScores[tp.id])}
-                    </td>
-                  ));
+                  return bab.tps.map((tp) => {
+                    const cleanKode = tp.kode.toLowerCase().replace(/[^a-z0-9_]/g, "");
+                    return (
+                      <td key={`prt-avg-tp-${tp.id}`} className="border border-black p-1 font-mono text-[9px]">
+                        {getColAvg((item) => item.record?.formatif.tpScores[tp.id] ?? item.record?.formatif.tpScores[cleanKode])}
+                      </td>
+                    );
+                  });
                 })}
                 <td className="border border-black p-1 font-mono text-[9px]">
                   {getColAvg((item) => item.record?.formatif.ulanganHarian)}
@@ -369,11 +405,14 @@ export const PrintReportSubject: React.FC = () => {
                 </td>
 
                 {/* Sumatif BAB Averages */}
-                {currentSubject.babs.map((bab) => (
-                  <td key={`prt-avg-bab-${bab.id}`} className="border border-black p-1 font-mono text-[9px]">
-                    {getColAvg((item) => item.record?.sumatif.babScores[bab.id])}
-                  </td>
-                ))}
+                {currentSubject.babs.map((bab) => {
+                  const cleanBab = bab.nama.toLowerCase().replace(/[^a-z0-9_]/g, "");
+                  return (
+                    <td key={`prt-avg-bab-${bab.id}`} className="border border-black p-1 font-mono text-[9px]">
+                      {getColAvg((item) => item.record?.sumatif.babScores[bab.id] ?? item.record?.sumatif.babScores[cleanBab])}
+                    </td>
+                  );
+                })}
 
                 {/* ASTS Averages */}
                 <td className="border border-black p-1 font-mono text-[9px]">
