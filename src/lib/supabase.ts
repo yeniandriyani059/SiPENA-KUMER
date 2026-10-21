@@ -1,8 +1,12 @@
 import { createClient, SupabaseClient, User, Session } from "@supabase/supabase-js";
 
-export const SUPABASE_URL = "https://nqdopaupzxibaozlolpl.supabase.co";
-export const SUPABASE_ANON_KEY =
+const rawUrl = (import.meta.env.VITE_SUPABASE_URL as string) || "https://nqdopaupzxibaozlolpl.supabase.co";
+export const SUPABASE_URL = rawUrl.replace(/\/rest\/v1\/?$/, "").replace(/\/$/, "");
+
+const rawKey =
+  (import.meta.env.VITE_SUPABASE_ANON_KEY as string) ||
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5xZG9wYXVwenhpYmFvemxvbHBsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkzMzYwNTIsImV4cCI6MjEwNDkxMjA1Mn0.aoe7q8bmkQdaGhXOv1nJj7tssC3_05U5apV0O2Stn-Y";
+export const SUPABASE_ANON_KEY = rawKey.trim();
 
 export const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {

@@ -37,7 +37,8 @@ export const PrintReportSubject: React.FC = () => {
           user.id,
           currentSubject.id,
           selectedSemester,
-          subjects
+          subjects,
+          students
         );
         if (isMounted && fetched && fetched.length > 0) {
           mergeGradeRecords(fetched);
@@ -54,7 +55,7 @@ export const PrintReportSubject: React.FC = () => {
     return () => {
       isMounted = false;
     };
-  }, [user, currentSubject?.id, selectedSemester, subjects, mergeGradeRecords]);
+  }, [user?.id, currentSubject?.id, selectedSemester, subjects, students, mergeGradeRecords]);
 
   if (!currentSubject) {
     return (

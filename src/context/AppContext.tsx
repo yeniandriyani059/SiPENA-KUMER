@@ -232,13 +232,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // 2. Fetch from Supabase Cloud (Multi-Tenant Real Data)
     if (isSupabaseConfigured) {
       try {
-        const [cloudProfileRaw, cloudConfig, cloudStudents, cloudSubjects, cloudGrades] = await Promise.all([
+        const [cloudProfileRaw, cloudConfig, cloudStudents, cloudSubjects] = await Promise.all([
           supabaseService.getUserProfile(userId),
           supabaseService.fetchSchoolSettings(userId),
           supabaseService.fetchStudents(userId),
-          supabaseService.fetchSubjects(userId),
-          supabaseService.fetchGradeRecords(userId)
+          supabaseService.fetchSubjects(userId)
         ]);
+
+        const cloudGrades = await supabaseService.fetchGradeRecords(
+          userId,
+          cloudSubjects || undefined,
+          cloudStudents || undefined
+        );
 
         let cloudProfile = cloudProfileRaw;
         // Pengecekan berbasis email jika profil belum aktif atau belum tercatat berdasarkan user_id
@@ -1142,14 +1147,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             ...existing,
             ...nr,
             formatif: {
-              ...existing.formatif,
-              ...nr.formatif,
-              tpScores: { ...existing.formatif.tpScores, ...nr.formatif.tpScores }
+              tpScores: { ...existing.formatif.tpScores, ...nr.formatif.tpScores },
+              ulanganHarian: nr.formatif.ulanganHarian !== null ? nr.formatif.ulanganHarian : existing.formatif.ulanganHarian,
+              tugasRutin: nr.formatif.tugasRutin !== null ? nr.formatif.tugasRutin : existing.formatif.tugasRutin,
+              praktikProyek: nr.formatif.praktikProyek !== null ? nr.formatif.praktikProyek : existing.formatif.praktikProyek,
+              catatanP5: nr.formatif.catatanP5 || existing.formatif.catatanP5 || ""
             },
             sumatif: {
-              ...existing.sumatif,
-              ...nr.sumatif,
-              babScores: { ...existing.sumatif.babScores, ...nr.sumatif.babScores }
+              babScores: { ...existing.sumatif.babScores, ...nr.sumatif.babScores },
+              astsNonTes: nr.sumatif.astsNonTes !== null ? nr.sumatif.astsNonTes : existing.sumatif.astsNonTes,
+              astsTes: nr.sumatif.astsTes !== null ? nr.sumatif.astsTes : existing.sumatif.astsTes,
+              astsTesRemedial: nr.sumatif.astsTesRemedial !== null ? nr.sumatif.astsTesRemedial : existing.sumatif.astsTesRemedial,
+              asasNonTes: nr.sumatif.asasNonTes !== null ? nr.sumatif.asasNonTes : existing.sumatif.asasNonTes,
+              asasTes: nr.sumatif.asasTes !== null ? nr.sumatif.asasTes : existing.sumatif.asasTes,
+              asasTesRemedial: nr.sumatif.asasTesRemedial !== null ? nr.sumatif.asasTesRemedial : existing.sumatif.asasTesRemedial
             }
           });
         }
@@ -1163,7 +1174,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!user || !isSupabaseConfigured) return;
     setIsRefreshingGrades(true);
     try {
-      const freshGrades = await supabaseService.fetchGradeRecords(user.id, subjects);
+      const freshGrades = await supabaseService.fetchGradeRecords(user.id, subjects, students);
       if (freshGrades !== null) {
         setGradeRecords(freshGrades);
       }
@@ -1172,7 +1183,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } finally {
       setIsRefreshingGrades(false);
     }
-  }, [user, subjects]);
+  }, [user, subjects, students]);
 
   // Reset & Backup
   const resetToDefaultData = () => {

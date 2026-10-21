@@ -102,7 +102,10 @@ export interface SipenaNilaiRow {
   user_id: string;
   siswa_id: string;
   mapel_id: string;
-  semester?: string;
+  semester: string;
+  kategori: "formatif" | "sumatif";
+  bab: string;
+  data_nilai: Record<string, any>;
   kolom_penilaian?: string;
   bab_id?: string;
   tp_id?: string | null;

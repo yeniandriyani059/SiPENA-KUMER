@@ -1,5 +1,5 @@
 import { supabase, isSupabaseConfigured } from "../lib/supabase";
-import { SchoolSettings, Student, Subject, StudentGradeRecord, SipenaUserProfile } from "../types";
+import { SchoolSettings, Student, Subject, StudentGradeRecord, SipenaUserProfile, SipenaNilaiRow } from "../types";
 
 /**
  * Service for multi-tenant data storage in Supabase.
@@ -475,23 +475,44 @@ export const supabaseService = {
     }
   },
 
+  // Helper to convert any string ID deterministically into a valid UUID v4 format
+  ensureValidUuid(id: string): string {
+    if (!id) return "00000000-0000-0000-0000-000000000000";
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (uuidRegex.test(id)) return id;
+    let hex = "";
+    for (let i = 0; i < id.length; i++) {
+      hex += id.charCodeAt(i).toString(16);
+    }
+    const padded = (hex + "00000000000000000000000000000000").slice(0, 32);
+    return `${padded.slice(0, 8)}-${padded.slice(8, 12)}-4${padded.slice(13, 16)}-a${padded.slice(17, 20)}-${padded.slice(20, 32)}`;
+  },
+
   // Helper to parse sipena_nilai rows into StudentGradeRecord array
-  parseSipenaNilaiRows(rows: any[], subjectsList?: Subject[]): StudentGradeRecord[] {
+  parseSipenaNilaiRows(
+    rows: any[],
+    subjectsList?: Subject[],
+    studentsList?: Student[]
+  ): StudentGradeRecord[] {
     if (!Array.isArray(rows) || rows.length === 0) return [];
 
     const recordsMap = new Map<string, StudentGradeRecord>();
 
     rows.forEach((row: any) => {
-      const studentId = row.siswa_id || row.student_id;
+      let studentId = row.siswa_id || row.student_id;
+      if (studentsList && studentId) {
+        const matched = studentsList.find(
+          (s) => s.id === studentId || this.ensureValidUuid(s.id) === studentId
+        );
+        if (matched) {
+          studentId = matched.id;
+        }
+      }
+
       const subjectId = row.mapel_id || row.subject_id;
       const semester = (row.semester as "1" | "2") || "1";
-      const babId = row.bab_id || "";
-      const tpId = row.tp_id || null;
-      const jenis = (row.jenis_penilaian || "").toLowerCase();
-      const kolom = (row.kolom_penilaian || "").toLowerCase().trim();
-      const rawNilai = row.nilai;
-      const val = rawNilai !== null && rawNilai !== undefined && rawNilai !== "" ? Number(rawNilai) : null;
-      const catatan = row.catatan || "";
+      const bab = row.bab || row.bab_id || "";
+      const kategori = (row.kategori || row.jenis_penilaian || "").toLowerCase();
 
       if (!studentId || !subjectId) return;
 
@@ -522,85 +543,131 @@ export const supabaseService = {
         recordsMap.set(key, rec);
       }
 
-      if (catatan && !rec.formatif.catatanP5) {
-        rec.formatif.catatanP5 = catatan;
-      }
-
-      // 1. Process explicit row value
-      if (val !== null) {
-        if (kolom.startsWith("tp") || tpId || jenis === "formatif_tp") {
-          const targetKey = tpId || kolom || babId;
-          rec.formatif.tpScores[targetKey] = val;
-          if (kolom) rec.formatif.tpScores[kolom] = val;
-          if (tpId) rec.formatif.tpScores[tpId] = val;
-        } else if (kolom === "uh" || kolom === "formatif_uh" || jenis === "formatif_uh" || babId === "formatif_uh") {
-          rec.formatif.ulanganHarian = val;
-        } else if (kolom === "tugas" || kolom === "formatif_tugas" || jenis === "formatif_tugas" || babId === "formatif_tugas") {
-          rec.formatif.tugasRutin = val;
-        } else if (kolom === "proyek" || kolom === "formatif_proyek" || jenis === "formatif_proyek" || babId === "formatif_proyek") {
-          rec.formatif.praktikProyek = val;
-        } else if (kolom === "catatan_p5" || jenis === "catatan_p5" || babId === "catatan_p5") {
-          if (catatan) rec.formatif.catatanP5 = catatan;
-        } else if (kolom === "asts_tes" || jenis === "asts_tes" || babId === "asts_tes") {
-          rec.sumatif.astsTes = val;
-        } else if (kolom === "asts_non_tes" || jenis === "asts_non_tes" || babId === "asts_non_tes") {
-          rec.sumatif.astsNonTes = val;
-        } else if (kolom === "asts_remedial" || jenis === "asts_remedial" || babId === "asts_remedial") {
-          rec.sumatif.astsTesRemedial = val;
-        } else if (kolom === "asas_tes" || jenis === "asas_tes" || babId === "asas_tes") {
-          rec.sumatif.asasTes = val;
-        } else if (kolom === "asas_non_tes" || jenis === "asas_non_tes" || babId === "asas_non_tes") {
-          rec.sumatif.asasNonTes = val;
-        } else if (kolom === "asas_remedial" || jenis === "asas_remedial" || babId === "asas_remedial") {
-          rec.sumatif.asasTesRemedial = val;
-        } else {
-          // Standard BAB score
-          rec.sumatif.babScores[babId || kolom] = val;
-          if (kolom) rec.sumatif.babScores[kolom] = val;
+      // Parse JSONB data_nilai
+      let dataNilai: Record<string, any> = {};
+      if (typeof row.data_nilai === "string") {
+        try {
+          dataNilai = JSON.parse(row.data_nilai);
+        } catch {
+          dataNilai = {};
         }
+      } else if (typeof row.data_nilai === "object" && row.data_nilai !== null) {
+        dataNilai = row.data_nilai;
       }
 
-      // 2. Also inspect any flat score columns present on the row object
-      Object.keys(row).forEach((k) => {
-        const lk = k.toLowerCase().replace(/\s+/g, "");
-        const v = row[k];
-        if (v === null || v === undefined || v === "" || isNaN(Number(v))) return;
-        const numVal = Number(v);
+      // 1. Process nested objects in data_nilai if present
+      if (dataNilai.tpScores && typeof dataNilai.tpScores === "object") {
+        Object.entries(dataNilai.tpScores).forEach(([k, v]) => {
+          if (v !== null && v !== undefined && !isNaN(Number(v))) {
+            const num = Number(v);
+            rec.formatif.tpScores[k] = num;
+            rec.formatif.tpScores[k.toLowerCase().replace(/[^a-z0-9_]/g, "")] = num;
+          }
+        });
+      }
 
-        if (lk.startsWith("tp") && lk.length <= 6) {
+      if (dataNilai.babScores && typeof dataNilai.babScores === "object") {
+        Object.entries(dataNilai.babScores).forEach(([k, v]) => {
+          if (v !== null && v !== undefined && !isNaN(Number(v))) {
+            const num = Number(v);
+            rec.sumatif.babScores[k] = num;
+            rec.sumatif.babScores[k.toLowerCase().replace(/[^a-z0-9_]/g, "")] = num;
+          }
+        });
+      }
+
+      // 2. Process all entries in data_nilai JSONB
+      Object.entries(dataNilai).forEach(([k, rawVal]) => {
+        if (k === "tpScores" || k === "babScores") return;
+        if (rawVal === null || rawVal === undefined || rawVal === "") return;
+
+        if (k.toLowerCase() === "catatanp5" || k === "catatan_p5") {
+          rec.formatif.catatanP5 = String(rawVal);
+          return;
+        }
+
+        const numVal = Number(rawVal);
+        if (isNaN(numVal)) return;
+
+        const lk = k.toLowerCase().replace(/[^a-z0-9_]/g, "");
+
+        if (lk.startsWith("tp")) {
+          rec.formatif.tpScores[k] = numVal;
           rec.formatif.tpScores[lk] = numVal;
-        } else if (lk === "uh" || lk === "ulangan_harian" || lk === "formatif_uh") {
+        } else if (lk === "uh" || lk === "ulanganharian" || lk === "formatif_uh") {
           rec.formatif.ulanganHarian = numVal;
-        } else if (lk === "tugas" || lk === "tugas_rutin" || lk === "formatif_tugas") {
+        } else if (lk === "tugas" || lk === "tugasrutin" || lk === "formatif_tugas") {
           rec.formatif.tugasRutin = numVal;
-        } else if (lk === "proyek" || lk === "praktik_proyek" || lk === "formatif_proyek") {
+        } else if (lk === "proyek" || lk === "praktikproyek" || lk === "formatif_proyek") {
           rec.formatif.praktikProyek = numVal;
-        } else if (lk === "asts_non_tes") {
-          rec.sumatif.astsNonTes = numVal;
-        } else if (lk === "asts_tes") {
+        } else if (lk === "aststes" || lk === "asts_tes") {
           rec.sumatif.astsTes = numVal;
-        } else if (lk === "asas_non_tes") {
-          rec.sumatif.asasNonTes = numVal;
-        } else if (lk === "asas_tes") {
+        } else if (lk === "astsnontes" || lk === "asts_non_tes") {
+          rec.sumatif.astsNonTes = numVal;
+        } else if (lk === "aststesremedial" || lk === "asts_remedial" || lk === "aststes_remedial") {
+          rec.sumatif.astsTesRemedial = numVal;
+        } else if (lk === "asastes" || lk === "asas_tes") {
           rec.sumatif.asasTes = numVal;
-        } else if (lk.startsWith("bab") && lk.length <= 6) {
+        } else if (lk === "asasnontes" || lk === "asas_non_tes") {
+          rec.sumatif.asasNonTes = numVal;
+        } else if (lk === "asastesremedial" || lk === "asas_remedial" || lk === "asastes_remedial") {
+          rec.sumatif.asasTesRemedial = numVal;
+        } else if (lk.startsWith("bab")) {
+          rec.sumatif.babScores[k] = numVal;
+          rec.sumatif.babScores[lk] = numVal;
+        } else if (kategori === "formatif") {
+          rec.formatif.tpScores[k] = numVal;
+          rec.formatif.tpScores[lk] = numVal;
+        } else if (kategori === "sumatif") {
+          rec.sumatif.babScores[k] = numVal;
           rec.sumatif.babScores[lk] = numVal;
         }
       });
 
-      // 3. Link TP & BAB codes to their IDs if subject metadata is provided
+      // 3. Fallback: Also inspect flat columns on row (for backward compatibility)
+      const rawNilai = row.nilai;
+      if (rawNilai !== null && rawNilai !== undefined && rawNilai !== "") {
+        const val = Number(rawNilai);
+        const kolom = (row.kolom_penilaian || bab || "").toLowerCase().trim();
+        if (kolom.startsWith("tp")) {
+          rec.formatif.tpScores[kolom] = val;
+        } else if (kolom === "uh") {
+          rec.formatif.ulanganHarian = val;
+        } else if (kolom === "tugas") {
+          rec.formatif.tugasRutin = val;
+        } else if (kolom === "proyek") {
+          rec.formatif.praktikProyek = val;
+        } else if (kolom.startsWith("bab")) {
+          rec.sumatif.babScores[kolom] = val;
+        } else if (kolom === "asts_tes") {
+          rec.sumatif.astsTes = val;
+        } else if (kolom === "asas_tes") {
+          rec.sumatif.asasTes = val;
+        }
+      }
+
+      if (row.catatan && !rec.formatif.catatanP5) {
+        rec.formatif.catatanP5 = row.catatan;
+      }
+
+      // 4. Link TP & BAB codes to their IDs if subject metadata is provided
       if (subjectsList && subjectId) {
         const matchedSubject = subjectsList.find((s) => s.id === subjectId);
         if (matchedSubject) {
-          matchedSubject.babs.forEach((bab) => {
-            const cleanBabNama = bab.nama.toLowerCase().replace(/[^a-z0-9_]/g, "");
-            if (rec.sumatif.babScores[cleanBabNama] !== undefined && rec.sumatif.babScores[bab.id] === undefined) {
-              rec.sumatif.babScores[bab.id] = rec.sumatif.babScores[cleanBabNama];
+          matchedSubject.babs.forEach((b) => {
+            const cleanBabNama = b.nama.toLowerCase().replace(/[^a-z0-9_]/g, "");
+            if (rec.sumatif.babScores[cleanBabNama] !== undefined && rec.sumatif.babScores[b.id] === undefined) {
+              rec.sumatif.babScores[b.id] = rec.sumatif.babScores[cleanBabNama];
+            } else if (rec.sumatif.babScores[b.id] !== undefined && rec.sumatif.babScores[cleanBabNama] === undefined) {
+              rec.sumatif.babScores[cleanBabNama] = rec.sumatif.babScores[b.id];
             }
-            bab.tps.forEach((tp) => {
+
+            b.tps.forEach((tp) => {
               const cleanKode = tp.kode.toLowerCase().replace(/[^a-z0-9_]/g, "");
               if (rec.formatif.tpScores[cleanKode] !== undefined && rec.formatif.tpScores[tp.id] === undefined) {
                 rec.formatif.tpScores[tp.id] = rec.formatif.tpScores[cleanKode];
+              } else if (rec.formatif.tpScores[tp.id] !== undefined && rec.formatif.tpScores[cleanKode] === undefined) {
+                rec.formatif.tpScores[cleanKode] = rec.formatif.tpScores[tp.id];
               }
             });
           });
@@ -612,7 +679,11 @@ export const supabaseService = {
   },
 
   // 4. GRADE RECORDS (sipena_nilai - Multi-tenant with user_id)
-  async fetchGradeRecords(userId: string, subjectsList?: Subject[]): Promise<StudentGradeRecord[] | null> {
+  async fetchGradeRecords(
+    userId: string,
+    subjectsList?: Subject[],
+    studentsList?: Student[]
+  ): Promise<StudentGradeRecord[] | null> {
     if (!isSupabaseConfigured || !userId) return null;
     try {
       // 1. First priority: sipena_nilai
@@ -625,7 +696,7 @@ export const supabaseService = {
         if (nilaiRows.length === 0) {
           return [];
         }
-        return this.parseSipenaNilaiRows(nilaiRows, subjectsList);
+        return this.parseSipenaNilaiRows(nilaiRows, subjectsList, studentsList);
       }
 
       // 2. Fallback check for sipena_nilai_formatif and sipena_nilai_sumatif
@@ -721,251 +792,86 @@ export const supabaseService = {
     }
   },
 
-  // Helper to convert StudentGradeRecord array into sipena_nilai rows
-  serializeToSipenaNilaiRows(userId: string, records: StudentGradeRecord[]): any[] {
-    const rows: any[] = [];
+  // Helper to convert StudentGradeRecord array into sipena_nilai rows with JSONB format
+  serializeToSipenaNilaiRows(userId: string, records: StudentGradeRecord[]): SipenaNilaiRow[] {
+    const rows: SipenaNilaiRow[] = [];
 
     records.forEach((r) => {
-      // 1. Formatif TP scores
-      Object.entries(r.formatif.tpScores || {}).forEach(([tpId, score]) => {
-        if (score !== null && score !== undefined && !isNaN(score)) {
-          rows.push({
-            id: `${userId}_${r.studentId}_${r.subjectId}_${tpId}_formatif_${r.semester}`,
-            user_id: userId,
-            siswa_id: r.studentId,
-            mapel_id: r.subjectId,
-            bab_id: tpId,
-            tp_id: tpId,
-            nilai: Number(score),
-            semester: r.semester,
-            jenis_penilaian: "formatif_tp",
-            updated_at: new Date().toISOString()
-          });
-        }
+      const validSiswaId = this.ensureValidUuid(r.studentId);
+      const sem = r.semester || "1";
+
+      // 1. Formatif row (JSONB)
+      const formatifData: Record<string, any> = {
+        ...r.formatif.tpScores,
+        tpScores: r.formatif.tpScores,
+        uh: r.formatif.ulanganHarian,
+        ulanganHarian: r.formatif.ulanganHarian,
+        tugas: r.formatif.tugasRutin,
+        tugasRutin: r.formatif.tugasRutin,
+        proyek: r.formatif.praktikProyek,
+        praktikProyek: r.formatif.praktikProyek,
+        catatanP5: r.formatif.catatanP5 || ""
+      };
+
+      rows.push({
+        user_id: userId,
+        siswa_id: validSiswaId,
+        mapel_id: r.subjectId,
+        semester: sem,
+        kategori: "formatif",
+        bab: "formatif_umum",
+        data_nilai: formatifData,
+        updated_at: new Date().toISOString()
       });
 
-      // 2. Formatif UH, Tugas, Proyek
-      if (r.formatif.ulanganHarian !== null && r.formatif.ulanganHarian !== undefined && !isNaN(r.formatif.ulanganHarian)) {
-        rows.push({
-          id: `${userId}_${r.studentId}_${r.subjectId}_formatif_uh_${r.semester}`,
-          user_id: userId,
-          siswa_id: r.studentId,
-          mapel_id: r.subjectId,
-          bab_id: "formatif_uh",
-          nilai: Number(r.formatif.ulanganHarian),
-          semester: r.semester,
-          jenis_penilaian: "formatif_uh",
-          updated_at: new Date().toISOString()
-        });
-      }
+      // 2. Sumatif row (JSONB)
+      const sumatifData: Record<string, any> = {
+        ...r.sumatif.babScores,
+        babScores: r.sumatif.babScores,
+        astsTes: r.sumatif.astsTes,
+        asts_tes: r.sumatif.astsTes,
+        astsNonTes: r.sumatif.astsNonTes,
+        asts_non_tes: r.sumatif.astsNonTes,
+        astsTesRemedial: r.sumatif.astsTesRemedial ?? null,
+        asts_remedial: r.sumatif.astsTesRemedial ?? null,
+        asasTes: r.sumatif.asasTes,
+        asas_tes: r.sumatif.asasTes,
+        asasNonTes: r.sumatif.asasNonTes,
+        asas_non_tes: r.sumatif.asasNonTes,
+        asasTesRemedial: r.sumatif.asasTesRemedial ?? null,
+        asas_remedial: r.sumatif.asasTesRemedial ?? null
+      };
 
-      if (r.formatif.tugasRutin !== null && r.formatif.tugasRutin !== undefined && !isNaN(r.formatif.tugasRutin)) {
-        rows.push({
-          id: `${userId}_${r.studentId}_${r.subjectId}_formatif_tugas_${r.semester}`,
-          user_id: userId,
-          siswa_id: r.studentId,
-          mapel_id: r.subjectId,
-          bab_id: "formatif_tugas",
-          nilai: Number(r.formatif.tugasRutin),
-          semester: r.semester,
-          jenis_penilaian: "formatif_tugas",
-          updated_at: new Date().toISOString()
-        });
-      }
-
-      if (r.formatif.praktikProyek !== null && r.formatif.praktikProyek !== undefined && !isNaN(r.formatif.praktikProyek)) {
-        rows.push({
-          id: `${userId}_${r.studentId}_${r.subjectId}_formatif_proyek_${r.semester}`,
-          user_id: userId,
-          siswa_id: r.studentId,
-          mapel_id: r.subjectId,
-          bab_id: "formatif_proyek",
-          nilai: Number(r.formatif.praktikProyek),
-          semester: r.semester,
-          jenis_penilaian: "formatif_proyek",
-          updated_at: new Date().toISOString()
-        });
-      }
-
-      if (r.formatif.catatanP5 && r.formatif.catatanP5.trim()) {
-        rows.push({
-          id: `${userId}_${r.studentId}_${r.subjectId}_catatan_p5_${r.semester}`,
-          user_id: userId,
-          siswa_id: r.studentId,
-          mapel_id: r.subjectId,
-          bab_id: "catatan_p5",
-          nilai: 0,
-          catatan: r.formatif.catatanP5,
-          semester: r.semester,
-          jenis_penilaian: "catatan_p5",
-          updated_at: new Date().toISOString()
-        });
-      }
-
-      // 3. Sumatif BAB
-      Object.entries(r.sumatif.babScores || {}).forEach(([babId, score]) => {
-        if (score !== null && score !== undefined && !isNaN(score)) {
-          rows.push({
-            id: `${userId}_${r.studentId}_${r.subjectId}_${babId}_sumatif_${r.semester}`,
-            user_id: userId,
-            siswa_id: r.studentId,
-            mapel_id: r.subjectId,
-            bab_id: babId,
-            nilai: Number(score),
-            semester: r.semester,
-            jenis_penilaian: "sumatif_bab",
-            updated_at: new Date().toISOString()
-          });
-        }
+      rows.push({
+        user_id: userId,
+        siswa_id: validSiswaId,
+        mapel_id: r.subjectId,
+        semester: sem,
+        kategori: "sumatif",
+        bab: "sumatif_umum",
+        data_nilai: sumatifData,
+        updated_at: new Date().toISOString()
       });
-
-      // 4. Sumatif ASTS & ASAS
-      if (r.sumatif.astsTes !== null && r.sumatif.astsTes !== undefined && !isNaN(r.sumatif.astsTes)) {
-        rows.push({
-          id: `${userId}_${r.studentId}_${r.subjectId}_asts_tes_${r.semester}`,
-          user_id: userId,
-          siswa_id: r.studentId,
-          mapel_id: r.subjectId,
-          bab_id: "asts_tes",
-          nilai: Number(r.sumatif.astsTes),
-          semester: r.semester,
-          jenis_penilaian: "asts_tes",
-          updated_at: new Date().toISOString()
-        });
-      }
-
-      if (r.sumatif.astsNonTes !== null && r.sumatif.astsNonTes !== undefined && !isNaN(r.sumatif.astsNonTes)) {
-        rows.push({
-          id: `${userId}_${r.studentId}_${r.subjectId}_asts_non_tes_${r.semester}`,
-          user_id: userId,
-          siswa_id: r.studentId,
-          mapel_id: r.subjectId,
-          bab_id: "asts_non_tes",
-          nilai: Number(r.sumatif.astsNonTes),
-          semester: r.semester,
-          jenis_penilaian: "asts_non_tes",
-          updated_at: new Date().toISOString()
-        });
-      }
-
-      if (r.sumatif.astsTesRemedial !== null && r.sumatif.astsTesRemedial !== undefined && !isNaN(r.sumatif.astsTesRemedial)) {
-        rows.push({
-          id: `${userId}_${r.studentId}_${r.subjectId}_asts_remedial_${r.semester}`,
-          user_id: userId,
-          siswa_id: r.studentId,
-          mapel_id: r.subjectId,
-          bab_id: "asts_remedial",
-          nilai: Number(r.sumatif.astsTesRemedial),
-          semester: r.semester,
-          jenis_penilaian: "asts_remedial",
-          updated_at: new Date().toISOString()
-        });
-      }
-
-      if (r.sumatif.asasTes !== null && r.sumatif.asasTes !== undefined && !isNaN(r.sumatif.asasTes)) {
-        rows.push({
-          id: `${userId}_${r.studentId}_${r.subjectId}_asas_tes_${r.semester}`,
-          user_id: userId,
-          siswa_id: r.studentId,
-          mapel_id: r.subjectId,
-          bab_id: "asas_tes",
-          nilai: Number(r.sumatif.asasTes),
-          semester: r.semester,
-          jenis_penilaian: "asas_tes",
-          updated_at: new Date().toISOString()
-        });
-      }
-
-      if (r.sumatif.asasNonTes !== null && r.sumatif.asasNonTes !== undefined && !isNaN(r.sumatif.asasNonTes)) {
-        rows.push({
-          id: `${userId}_${r.studentId}_${r.subjectId}_asas_non_tes_${r.semester}`,
-          user_id: userId,
-          siswa_id: r.studentId,
-          mapel_id: r.subjectId,
-          bab_id: "asas_non_tes",
-          nilai: Number(r.sumatif.asasNonTes),
-          semester: r.semester,
-          jenis_penilaian: "asas_non_tes",
-          updated_at: new Date().toISOString()
-        });
-      }
-
-      if (r.sumatif.asasTesRemedial !== null && r.sumatif.asasTesRemedial !== undefined && !isNaN(r.sumatif.asasTesRemedial)) {
-        rows.push({
-          id: `${userId}_${r.studentId}_${r.subjectId}_asas_remedial_${r.semester}`,
-          user_id: userId,
-          siswa_id: r.studentId,
-          mapel_id: r.subjectId,
-          bab_id: "asas_remedial",
-          nilai: Number(r.sumatif.asasTesRemedial),
-          semester: r.semester,
-          jenis_penilaian: "asas_remedial",
-          updated_at: new Date().toISOString()
-        });
-      }
     });
 
     return rows;
   },
 
-  // Save multiple grade rows into sipena_nilai with automatic schema resilience
+  // Save multiple grade rows into sipena_nilai with onConflict composite key
   async upsertToSipenaNilai(userId: string, rows: any[]): Promise<boolean> {
     if (!isSupabaseConfigured || !userId || rows.length === 0) return true;
     try {
-      // Attempt 1: Full payload with onConflict on 'id'
-      const { error: err1 } = await supabase
+      const { error } = await supabase
         .from("sipena_nilai")
-        .upsert(rows, { onConflict: "id" });
+        .upsert(rows, { onConflict: "user_id,siswa_id,mapel_id,semester,kategori,bab" });
 
-      if (!err1) return true;
-
-      // Attempt 2: Minimal columns if extra columns don't exist in Supabase schema
-      if (err1.message.includes("Could not find the column") || err1.message.includes("column") || err1.code === "PGRST204") {
-        const strippedRows = rows.map((r) => ({
-          id: r.id,
-          user_id: r.user_id,
-          siswa_id: r.siswa_id,
-          mapel_id: r.mapel_id,
-          bab_id: r.bab_id,
-          nilai: r.nilai
-        }));
-        const { error: err2 } = await supabase
-          .from("sipena_nilai")
-          .upsert(strippedRows, { onConflict: "id" });
-
-        if (!err2) return true;
+      if (error) {
+        console.error("Supabase upsertToSipenaNilai error:", error);
+        return false;
       }
-
-      // Attempt 3: If onConflict on 'id' fails, insert without id
-      const minimalRows = rows.map((r) => ({
-        user_id: r.user_id,
-        siswa_id: r.siswa_id,
-        mapel_id: r.mapel_id,
-        bab_id: r.bab_id,
-        nilai: r.nilai
-      }));
-
-      // Delete existing records for these students & subjects to avoid duplicates
-      const studentIds = Array.from(new Set(rows.map((r) => r.siswa_id)));
-      const subjectIds = Array.from(new Set(rows.map((r) => r.mapel_id)));
-      for (const sId of studentIds) {
-        for (const mId of subjectIds) {
-          await supabase
-            .from("sipena_nilai")
-            .delete()
-            .eq("user_id", userId)
-            .eq("siswa_id", sId)
-            .eq("mapel_id", mId);
-        }
-      }
-
-      const { error: err3 } = await supabase.from("sipena_nilai").insert(minimalRows);
-      if (!err3) return true;
-
-      console.warn("Supabase upsertToSipenaNilai warning:", err3.message);
-      return false;
+      return true;
     } catch (err) {
-      console.warn("Supabase upsertToSipenaNilai exception:", err);
+      console.error("Supabase upsertToSipenaNilai exception:", err);
       return false;
     }
   },
@@ -973,51 +879,10 @@ export const supabaseService = {
   async saveGradeRecords(userId: string, records: StudentGradeRecord[]): Promise<boolean> {
     if (!isSupabaseConfigured || !userId || records.length === 0) return false;
     try {
-      // 1. Primary: Save to sipena_nilai
       const rows = this.serializeToSipenaNilaiRows(userId, records);
-      const ok = await this.upsertToSipenaNilai(userId, rows);
-
-      // 2. Secondary: Also save to legacy formatif & sumatif if they exist
-      try {
-        const formatifRows = records.map((r) => ({
-          id: `${r.studentId}_${r.subjectId}_${r.semester}`,
-          user_id: userId,
-          student_id: r.studentId,
-          subject_id: r.subjectId,
-          semester: r.semester,
-          tp_scores: r.formatif.tpScores,
-          ulangan_harian: r.formatif.ulanganHarian,
-          tugas_rutin: r.formatif.tugasRutin,
-          praktik_proyek: r.formatif.praktikProyek,
-          catatan_p5: r.formatif.catatanP5,
-          updated_at: new Date().toISOString()
-        }));
-
-        const sumatifRows = records.map((r) => ({
-          id: `${r.studentId}_${r.subjectId}_${r.semester}`,
-          user_id: userId,
-          student_id: r.studentId,
-          subject_id: r.subjectId,
-          semester: r.semester,
-          bab_scores: r.sumatif.babScores,
-          asts_non_tes: r.sumatif.astsNonTes,
-          asts_tes: r.sumatif.astsTes,
-          asts_tes_remedial: r.sumatif.astsTesRemedial ?? null,
-          asas_non_tes: r.sumatif.asasNonTes,
-          asas_tes: r.sumatif.asasTes,
-          asas_tes_remedial: r.sumatif.asasTesRemedial ?? null,
-          updated_at: new Date().toISOString()
-        }));
-
-        await Promise.all([
-          supabase.from("sipena_nilai_formatif").upsert(formatifRows, { onConflict: "id,user_id" }),
-          supabase.from("sipena_nilai_sumatif").upsert(sumatifRows, { onConflict: "id,user_id" })
-        ]);
-      } catch (e) {}
-
-      return ok;
+      return await this.upsertToSipenaNilai(userId, rows);
     } catch (err) {
-      console.warn("Supabase saveGradeRecords exception:", err);
+      console.error("Supabase saveGradeRecords exception:", err);
       return false;
     }
   },
@@ -1029,7 +894,7 @@ export const supabaseService = {
       const rows = this.serializeToSipenaNilaiRows(userId, [record]);
       return await this.upsertToSipenaNilai(userId, rows);
     } catch (err) {
-      console.warn("Supabase saveSingleGradeRecord exception:", err);
+      console.error("Supabase saveSingleGradeRecord exception:", err);
       return false;
     }
   },
@@ -1039,7 +904,8 @@ export const supabaseService = {
     userId: string,
     mapelId: string,
     semester: string,
-    subjectsList?: Subject[]
+    subjectsList?: Subject[],
+    studentsList?: Student[]
   ): Promise<StudentGradeRecord[] | null> {
     if (!isSupabaseConfigured || !userId || !mapelId) return null;
     try {
@@ -1051,7 +917,7 @@ export const supabaseService = {
         .eq("semester", semester);
 
       if (error) {
-        console.warn("Supabase fetchGradeRecordsBySubject warning:", error.message);
+        console.error("Supabase fetchGradeRecordsBySubject error:", error.message);
         return null;
       }
 
@@ -1059,15 +925,15 @@ export const supabaseService = {
         return [];
       }
 
-      return this.parseSipenaNilaiRows(rows, subjectsList);
+      return this.parseSipenaNilaiRows(rows, subjectsList, studentsList);
     } catch (err) {
-      console.warn("Supabase fetchGradeRecordsBySubject exception:", err);
+      console.error("Supabase fetchGradeRecordsBySubject exception:", err);
       return null;
     }
   },
 
-  // Direct single score update to sipena_nilai with exact schema fields:
-  // user_id, siswa_id, mapel_id, semester, kolom_penilaian, nilai
+  // Direct single score update to sipena_nilai with JSONB format:
+  // user_id, siswa_id, mapel_id, semester, kategori, bab, data_nilai
   async saveDirectGradeScore(
     userId: string,
     params: {
@@ -1080,107 +946,157 @@ export const supabaseService = {
       tpId?: string;
       jenisPenilaian?: string;
       catatan?: string;
+      currentRecord?: StudentGradeRecord;
     }
-  ): Promise<boolean> {
-    if (!isSupabaseConfigured || !userId || !params.siswaId || !params.mapelId) return false;
+  ): Promise<{ success: boolean; error?: any }> {
+    if (!isSupabaseConfigured || !userId || !params.siswaId || !params.mapelId) {
+      const err = new Error("Supabase belum dikonfigurasi atau parameter tidak lengkap");
+      console.error(err);
+      return { success: false, error: err };
+    }
     try {
-      const { siswaId, mapelId, semester, kolomPenilaian, nilai, babId, tpId, jenisPenilaian, catatan } = params;
+      const {
+        siswaId,
+        mapelId,
+        semester,
+        kolomPenilaian,
+        nilai,
+        babId,
+        tpId,
+        jenisPenilaian,
+        catatan,
+        currentRecord
+      } = params;
       const cleanKolom = (kolomPenilaian || "").toLowerCase().replace(/[^a-z0-9_]/g, "");
       const sem = semester || "1";
-      const uniqueId = `${userId}_${siswaId}_${mapelId}_${sem}_${cleanKolom}`;
+      const validSiswaId = this.ensureValidUuid(siswaId);
 
-      if (nilai === null || nilai === undefined || isNaN(nilai)) {
-        await supabase
-          .from("sipena_nilai")
-          .delete()
-          .eq("user_id", userId)
-          .eq("siswa_id", siswaId)
-          .eq("mapel_id", mapelId)
-          .eq("semester", sem)
-          .or(`kolom_penilaian.eq.${cleanKolom},bab_id.eq.${babId || cleanKolom},id.eq.${uniqueId}`);
-        return true;
+      // 1. Determine category: formatif vs sumatif
+      const isFormatif =
+        cleanKolom.startsWith("tp") ||
+        cleanKolom === "uh" ||
+        cleanKolom === "tugas" ||
+        cleanKolom === "proyek" ||
+        cleanKolom === "catatan_p5" ||
+        cleanKolom === "catatanp5" ||
+        (jenisPenilaian && jenisPenilaian.includes("formatif"));
+
+      const kategori: "formatif" | "sumatif" = isFormatif ? "formatif" : "sumatif";
+
+      // 2. Determine bab string
+      let bab = babId || "umum";
+      if (isFormatif) {
+        if (cleanKolom.startsWith("tp")) {
+          bab = babId || cleanKolom;
+        } else {
+          bab = "formatif_umum";
+        }
+      } else {
+        if (cleanKolom.startsWith("asts")) {
+          bab = "asts";
+        } else if (cleanKolom.startsWith("asas")) {
+          bab = "asas";
+        } else {
+          bab = babId || cleanKolom;
+        }
       }
 
-      const numVal = Number(nilai);
+      // 3. Build data_nilai JSONB structure
+      const dataNilai: Record<string, any> = {};
 
-      // 1. Prepare comprehensive record
-      const fullRow: any = {
-        id: uniqueId,
+      if (currentRecord) {
+        if (kategori === "formatif") {
+          Object.entries(currentRecord.formatif.tpScores || {}).forEach(([k, v]) => {
+            if (v !== null && v !== undefined) {
+              dataNilai[k] = v;
+              dataNilai[k.toLowerCase().replace(/[^a-z0-9_]/g, "")] = v;
+            }
+          });
+          if (currentRecord.formatif.ulanganHarian !== null) {
+            dataNilai.uh = currentRecord.formatif.ulanganHarian;
+            dataNilai.ulanganHarian = currentRecord.formatif.ulanganHarian;
+          }
+          if (currentRecord.formatif.tugasRutin !== null) {
+            dataNilai.tugas = currentRecord.formatif.tugasRutin;
+            dataNilai.tugasRutin = currentRecord.formatif.tugasRutin;
+          }
+          if (currentRecord.formatif.praktikProyek !== null) {
+            dataNilai.proyek = currentRecord.formatif.praktikProyek;
+            dataNilai.praktikProyek = currentRecord.formatif.praktikProyek;
+          }
+          if (currentRecord.formatif.catatanP5) {
+            dataNilai.catatanP5 = currentRecord.formatif.catatanP5;
+          }
+        } else {
+          Object.entries(currentRecord.sumatif.babScores || {}).forEach(([k, v]) => {
+            if (v !== null && v !== undefined) {
+              dataNilai[k] = v;
+              dataNilai[k.toLowerCase().replace(/[^a-z0-9_]/g, "")] = v;
+            }
+          });
+          if (currentRecord.sumatif.astsTes !== null) {
+            dataNilai.astsTes = currentRecord.sumatif.astsTes;
+            dataNilai.asts_tes = currentRecord.sumatif.astsTes;
+          }
+          if (currentRecord.sumatif.astsNonTes !== null) {
+            dataNilai.astsNonTes = currentRecord.sumatif.astsNonTes;
+            dataNilai.asts_non_tes = currentRecord.sumatif.astsNonTes;
+          }
+          if (currentRecord.sumatif.astsTesRemedial !== null) {
+            dataNilai.astsTesRemedial = currentRecord.sumatif.astsTesRemedial;
+            dataNilai.asts_remedial = currentRecord.sumatif.astsTesRemedial;
+          }
+          if (currentRecord.sumatif.asasTes !== null) {
+            dataNilai.asasTes = currentRecord.sumatif.asasTes;
+            dataNilai.asas_tes = currentRecord.sumatif.asasTes;
+          }
+          if (currentRecord.sumatif.asasNonTes !== null) {
+            dataNilai.asasNonTes = currentRecord.sumatif.asasNonTes;
+            dataNilai.asas_non_tes = currentRecord.sumatif.asasNonTes;
+          }
+          if (currentRecord.sumatif.asasTesRemedial !== null) {
+            dataNilai.asasTesRemedial = currentRecord.sumatif.asasTesRemedial;
+            dataNilai.asas_remedial = currentRecord.sumatif.asasTesRemedial;
+          }
+        }
+      }
+
+      // Write or overwrite with the new value
+      dataNilai[cleanKolom] = nilai;
+      if (kolomPenilaian && kolomPenilaian !== cleanKolom) {
+        dataNilai[kolomPenilaian] = nilai;
+      }
+      if (tpId) {
+        dataNilai[tpId] = nilai;
+      }
+      if (catatan) {
+        dataNilai.catatanP5 = catatan;
+      }
+
+      const row: any = {
         user_id: userId,
-        siswa_id: siswaId,
+        siswa_id: validSiswaId,
         mapel_id: mapelId,
         semester: sem,
-        kolom_penilaian: cleanKolom,
-        nilai: numVal,
-        bab_id: babId || cleanKolom,
-        tp_id: tpId || null,
-        jenis_penilaian: jenisPenilaian || "formatif_tp",
-        catatan: catatan || null,
+        kategori,
+        bab,
+        data_nilai: dataNilai,
         updated_at: new Date().toISOString()
       };
 
-      // Set dynamic flat column if present in table
-      fullRow[cleanKolom] = numVal;
-
-      // Attempt 1: Full upsert
-      const { error: err1 } = await supabase
+      const { error } = await supabase
         .from("sipena_nilai")
-        .upsert([fullRow], { onConflict: "id" });
+        .upsert(row, { onConflict: "user_id,siswa_id,mapel_id,semester,kategori,bab" });
 
-      if (!err1) return true;
+      if (error) {
+        console.error("Gagal menyimpan nilai ke Supabase sipena_nilai:", error);
+        return { success: false, error };
+      }
 
-      // Attempt 2: If dynamic column fails, strip dynamic column and retry
-      const standardRow: any = {
-        id: uniqueId,
-        user_id: userId,
-        siswa_id: siswaId,
-        mapel_id: mapelId,
-        semester: sem,
-        kolom_penilaian: cleanKolom,
-        nilai: numVal,
-        bab_id: babId || cleanKolom,
-        tp_id: tpId || null,
-        jenis_penilaian: jenisPenilaian || "formatif_tp",
-        catatan: catatan || null,
-        updated_at: new Date().toISOString()
-      };
-
-      const { error: err2 } = await supabase
-        .from("sipena_nilai")
-        .upsert([standardRow], { onConflict: "id" });
-
-      if (!err2) return true;
-
-      // Attempt 3: If kolom_penilaian is not in schema, fallback to bab_id & nilai
-      const fallbackRow: any = {
-        id: uniqueId,
-        user_id: userId,
-        siswa_id: siswaId,
-        mapel_id: mapelId,
-        semester: sem,
-        bab_id: babId || cleanKolom,
-        nilai: numVal,
-        updated_at: new Date().toISOString()
-      };
-
-      const { error: err3 } = await supabase
-        .from("sipena_nilai")
-        .upsert([fallbackRow], { onConflict: "id" });
-
-      if (!err3) return true;
-
-      // Attempt 4: Composite key constraint fallback
-      const { error: err4 } = await supabase
-        .from("sipena_nilai")
-        .upsert([standardRow], { onConflict: "user_id,siswa_id,mapel_id,bab_id,jenis_penilaian,semester" });
-
-      if (!err4) return true;
-
-      console.warn("Supabase saveDirectGradeScore note:", err4.message);
-      return false;
-    } catch (err) {
-      console.warn("Supabase saveDirectGradeScore exception:", err);
-      return false;
+      return { success: true };
+    } catch (err: any) {
+      console.error("Exception saveDirectGradeScore:", err);
+      return { success: false, error: err };
     }
   },
 
@@ -1196,45 +1112,20 @@ export const supabaseService = {
       semester?: string;
       jenisPenilaian?: string;
       catatan?: string;
+      currentRecord?: StudentGradeRecord;
     }
-  ): Promise<boolean> {
-    if (!isSupabaseConfigured || !userId || !siswaId || !mapelId || !babId) return false;
-    try {
-      const sem = extra?.semester || "1";
-      const jenis = extra?.jenisPenilaian || "sumatif_bab";
-      const uniqueId = `${userId}_${siswaId}_${mapelId}_${babId}_${jenis}_${sem}`;
-
-      if (nilai === null || nilai === undefined || isNaN(nilai)) {
-        // Delete record from sipena_nilai if value is cleared
-        await supabase
-          .from("sipena_nilai")
-          .delete()
-          .eq("user_id", userId)
-          .eq("siswa_id", siswaId)
-          .eq("mapel_id", mapelId)
-          .eq("bab_id", babId);
-        return true;
-      }
-
-      const row: any = {
-        id: uniqueId,
-        user_id: userId,
-        siswa_id: siswaId,
-        mapel_id: mapelId,
-        bab_id: babId,
-        kolom_penilaian: babId,
-        nilai: Number(nilai),
-        tp_id: extra?.tpId || null,
-        semester: sem,
-        jenis_penilaian: jenis,
-        catatan: extra?.catatan || null,
-        updated_at: new Date().toISOString()
-      };
-
-      return await this.upsertToSipenaNilai(userId, [row]);
-    } catch (err) {
-      console.warn("Supabase saveDirectScore exception:", err);
-      return false;
-    }
+  ): Promise<{ success: boolean; error?: any }> {
+    return this.saveDirectGradeScore(userId, {
+      siswaId,
+      mapelId,
+      semester: extra?.semester || "1",
+      kolomPenilaian: babId,
+      nilai,
+      babId,
+      tpId: extra?.tpId,
+      jenisPenilaian: extra?.jenisPenilaian,
+      catatan: extra?.catatan,
+      currentRecord: extra?.currentRecord
+    });
   }
 };

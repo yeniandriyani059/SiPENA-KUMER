@@ -53,17 +53,15 @@ export const GradeInput: React.FC = () => {
     getGradeRecord,
     updateStudentGradeField,
     refreshGradeRecords,
+    mergeGradeRecords,
     setActiveTab
   } = useApp();
 
-  // Auto-fetch real-time grade records from Supabase on mount, semester change, or subject change
-  useEffect(() => {
-    refreshGradeRecords();
-  }, [selectedSemester, selectedSubjectId, refreshGradeRecords]);
-
   const [activeSectionView, setActiveSectionView] = useState<"all" | "formatif" | "sumatif">("all");
   const [searchTerm, setSearchTerm] = useState("");
-  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">("idle");
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isFetchingGrades, setIsFetchingGrades] = useState(false);
   const debounceTimersRef = useRef<{ [key: string]: any }>({});
 
   const [editingNoteStudent, setEditingNoteStudent] = useState<{
@@ -73,6 +71,42 @@ export const GradeInput: React.FC = () => {
   } | null>(null);
 
   const currentSubject = subjects.find((s) => s.id === selectedSubjectId) || subjects[0];
+
+  // 3. FETCH DATA SAAT HALAMAN DIMUAT (USEEFFECT):
+  // Mengambil (select) data dari sipena_nilai setiap kali komponen dimuat (saat refresh) atau saat Mapel/Semester diganti
+  // Isi ulang (populate) sel-sel nilai di layar menggunakan data hasil fetch dari Supabase
+  useEffect(() => {
+    let isCancelled = false;
+
+    const fetchSubjectGrades = async () => {
+      if (!user || !currentSubject) return;
+      setIsFetchingGrades(true);
+      try {
+        const records = await supabaseService.fetchGradeRecordsBySubject(
+          user.id,
+          currentSubject.id,
+          selectedSemester,
+          subjects,
+          students
+        );
+        if (!isCancelled && records && records.length > 0) {
+          mergeGradeRecords(records);
+        }
+      } catch (err) {
+        console.error("Gagal mengambil data nilai dari Supabase sipena_nilai:", err);
+      } finally {
+        if (!isCancelled) {
+          setIsFetchingGrades(false);
+        }
+      }
+    };
+
+    fetchSubjectGrades();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [user?.id, currentSubject?.id, selectedSemester, subjects, students, mergeGradeRecords]);
 
   if (!currentSubject) {
     return (
@@ -100,19 +134,21 @@ export const GradeInput: React.FC = () => {
       s.noInduk.includes(searchTerm)
   );
 
-  // Directly upsert single score into Supabase sipena_nilai
+  // Directly upsert single score into Supabase sipena_nilai with JSONB format & Toast on error
   const saveToSupabase = async (
     studentId: string,
     kolomPenilaian: string,
     val: number | null,
     babId?: string,
     tpId?: string,
-    jenisPenilaian?: string
+    jenisPenilaian?: string,
+    catatan?: string
   ) => {
     if (!user) return;
     setSaveStatus("saving");
     try {
-      const ok = await supabaseService.saveDirectGradeScore(user.id, {
+      const currentRec = getGradeRecord(studentId, currentSubject.id, selectedSemester);
+      const res = await supabaseService.saveDirectGradeScore(user.id, {
         siswaId: studentId,
         mapelId: currentSubject.id,
         semester: selectedSemester,
@@ -120,17 +156,24 @@ export const GradeInput: React.FC = () => {
         nilai: val,
         babId,
         tpId,
-        jenisPenilaian
+        jenisPenilaian,
+        catatan,
+        currentRecord: currentRec
       });
-      if (ok) {
+
+      if (res.success) {
+        setErrorMessage(null);
         setSaveStatus("saved");
         setTimeout(() => setSaveStatus("idle"), 2500);
       } else {
-        setSaveStatus("idle");
+        console.error("Gagal menyimpan nilai! Cek koneksi atau database.", res.error);
+        setErrorMessage("Gagal menyimpan nilai! Cek koneksi atau database.");
+        setSaveStatus("error");
       }
     } catch (e) {
-      console.warn("Auto-save to Supabase failed:", e);
-      setSaveStatus("idle");
+      console.error("Gagal menyimpan nilai! Cek koneksi atau database.", e);
+      setErrorMessage("Gagal menyimpan nilai! Cek koneksi atau database.");
+      setSaveStatus("error");
     }
   };
 
@@ -298,8 +341,34 @@ export const GradeInput: React.FC = () => {
             </p>
           </div>
 
-          {/* Right Action Tools */}
-          <div className="flex items-center gap-2">
+          {/* Right Action Tools & Visual Status Indicators */}
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Indikator visual status penyimpanan Supabase */}
+            {saveStatus === "saving" && (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200 animate-pulse">
+                <span className="w-2 h-2 rounded-full bg-amber-500 animate-ping"></span>
+                <span>Menyimpan...</span>
+              </span>
+            )}
+            {saveStatus === "saved" && (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 shadow-xs">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                <span>Tersimpan</span>
+              </span>
+            )}
+            {saveStatus === "error" && (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200">
+                <AlertTriangle className="w-4 h-4 text-rose-600" />
+                <span>Gagal Simpan</span>
+              </span>
+            )}
+            {isFetchingGrades && (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-100 text-slate-600 border border-slate-200">
+                <Database className="w-3.5 h-3.5 animate-pulse text-indigo-600" />
+                <span>Memuat data...</span>
+              </span>
+            )}
+
             <input
               type="text"
               placeholder="Cari siswa / NISN..."
@@ -359,11 +428,34 @@ export const GradeInput: React.FC = () => {
               </strong>
             </span>
           </div>
-          <span className="text-[11px] text-slate-400 italic">
-            * Nilai langsung tersimpan otomatis ke penyimpanan lokal browser.
+          <span className="text-[11px] text-slate-500 italic">
+            * Nilai otomatis tersimpan ke tabel sipena_nilai (Cloud Supabase).
           </span>
         </div>
       </div>
+
+      {/* Floating Red Toast / Alert jika Gagal Menyimpan Nilai */}
+      {errorMessage && (
+        <div className="fixed top-5 right-5 z-50 flex items-center gap-3 bg-red-600 text-white px-4 py-3 rounded-xl shadow-2xl border border-red-700 max-w-md animate-bounce">
+          <AlertTriangle className="w-5 h-5 shrink-0 text-white" />
+          <div className="flex-1 text-xs sm:text-sm font-semibold">{errorMessage}</div>
+          <button
+            onClick={() => setErrorMessage(null)}
+            className="p-1 hover:bg-red-700 text-white rounded-lg transition-colors cursor-pointer"
+            title="Tutup Notifikasi"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Floating Green Success Badge di pojok kanan bawah saat tersimpan */}
+      {saveStatus === "saved" && (
+        <div className="fixed bottom-6 right-6 z-40 flex items-center gap-2 bg-emerald-600 text-white px-3.5 py-2 rounded-xl shadow-lg border border-emerald-500 text-xs font-bold transition-all duration-300">
+          <CheckCircle2 className="w-4 h-4 text-white" />
+          <span>Nilai Tersimpan di Cloud Supabase</span>
+        </div>
+      )}
 
       {/* Interactive Grade Entry Sheet */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
@@ -1050,7 +1142,18 @@ export const GradeInput: React.FC = () => {
 
                 <button
                   type="button"
-                  onClick={() => setEditingNoteStudent(null)}
+                  onClick={() => {
+                    saveToSupabase(
+                      editingNoteStudent.id,
+                      "catatan_p5",
+                      null,
+                      "formatif_umum",
+                      undefined,
+                      "formatif_catatan",
+                      currentNote
+                    );
+                    setEditingNoteStudent(null);
+                  }}
                   className="px-4 py-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shadow-xs transition-colors cursor-pointer"
                 >
                   Selesai & Simpan
